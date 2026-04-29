@@ -67,6 +67,61 @@ export class ChainService {
     return grouped;
   }
 
+  /**
+   * Decodes an array of base64-encoded msgpack transaction strings to raw Uint8Array bytes.
+   */
+  decodeBase64Transactions(txs: string[]): Uint8Array[] {
+    return txs.map((tx) => new Uint8Array(Buffer.from(tx, 'base64')));
+  }
+
+  /**
+   * Decodes a transaction in various formats.
+   * Accepts either:
+   *   - an unsigned transaction prefixed with the "TX" tag (output of `encodeTransaction`), or
+   *   - a signed transaction msgpack object `{ txn, sig }` (output of `encodeSignedTransaction`).
+   *
+   * Returns the decoded transaction object, an optional signature, and the canonical
+   * unsigned-with-TX-tag bytes suitable for `addSignatureToTxn`.
+   * Check `sig` property to determine if the transaction is signed.
+   */
+  decodeTransaction(raw: Uint8Array): {
+    txn: any;
+    sig?: Uint8Array;
+    unsignedEncoded: Uint8Array;
+  } {
+    const encoder = new AlgorandEncoder();
+    // 'T' = 0x54, 'X' = 0x58
+    if (raw.length >= 2 && raw[0] === 0x54 && raw[1] === 0x58) {
+      const txn = encoder.decodeTransaction(raw);
+      return { txn, unsignedEncoded: raw };
+    }
+
+    let decoded: any;
+    try {
+      decoded = encoder.decodeSignedTransaction(raw);
+    } catch (error) {
+      throw new HttpErrorByCode[400](`Failed to decode transaction: ${error.message}`);
+    }
+
+    if (decoded && decoded.txn && decoded.sig) {
+      return {
+        txn: decoded.txn,
+        sig: decoded.sig,
+        unsignedEncoded: encoder.encodeTransaction(decoded.txn),
+      };
+    }
+
+    if (decoded && decoded.snd) {
+      // unsigned msgpack without TX tag prefix
+      return {
+        txn: decoded,
+        unsignedEncoded: encoder.encodeTransaction(decoded),
+      };
+    }
+
+    throw new HttpErrorByCode[400]('Invalid transaction envelope');
+  }
+
   async craftAssetCreateTx(
     creatorAddress: string,
     options: {
