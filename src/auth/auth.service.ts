@@ -39,4 +39,22 @@ export class AuthService {
     const vault_token = await this.vaultService.authGithub(token);
     return vault_token;
   }
+
+  async getUserEmail(userId: string): Promise<string | null> {
+    const mockEmails: Record<string, string> = {
+      alice: 'alice@example.com',
+      bob: 'bob@example.com',
+      charlie: 'charlie@example.com',
+    };
+    return mockEmails[userId] || null;
+  }
+
+  async getUserIdByEmail(email: string): Promise<string | null> {
+    const mockEmails: Record<string, string> = {
+      'alice@example.com': 'alice',
+      'bob@example.com': 'bob',
+      'charlie@example.com': 'charlie',
+    };
+    return mockEmails[email.toLowerCase()] || null;
+  }
 }
