@@ -83,8 +83,8 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)sx?$": "ts-jest",
-      "^.+\\.mjs$": "ts-jest"
+      "^.+\\.(t|j)sx?$": ["ts-jest", { "tsconfig": { "module": "commonjs", "moduleResolution": "node" } }],
+      "^.+\\.mjs$": ["ts-jest", { "tsconfig": { "module": "commonjs", "moduleResolution": "node" } }]
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
