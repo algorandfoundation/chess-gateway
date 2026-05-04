@@ -32,6 +32,7 @@
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/platform-express": "^11.1.18",
     "@nestjs/swagger": "^11.4.2",
+    "@nestjs/typeorm": "^11.0.1",
     "@thallesp/nestjs-better-auth": "^2.6.0",
     "axios": "^1.8.2",
     "better-auth": "^1.6.9",
@@ -39,9 +40,9 @@
     "bip39": "^3.1.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
-    "js-sha512": "^0.9.0",
     "cookie-parser": "^1.4.7",
     "dotenv": "^17.4.2",
+    "js-sha512": "^0.9.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "sqlite3": "^6.0.1",
@@ -86,15 +87,33 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)sx?$": "ts-jest",
-      "^.+\\.mjs$": "ts-jest"
+      "^.+\\.(t|j)sx?$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "commonjs",
+            "moduleResolution": "node"
+          }
+        }
+      ],
+      "^.+\\.mjs$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "commonjs",
+            "moduleResolution": "node"
+          }
+        }
+      ]
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "./coverage",
     "testEnvironment": "node",
-    "setupFilesAfterEnv": ["<rootDir>/../test/setup.ts"],
+    "setupFilesAfterEnv": [
+      "<rootDir>/../test/setup.ts"
+    ],
     "transformIgnorePatterns": [
       "node_modules/(?!@algorandfoundation/algokit-utils|@noble/hashes|@noble/ed25519|@thallesp/nestjs-better-auth|better-auth)"
     ],
