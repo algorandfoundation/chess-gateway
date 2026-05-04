@@ -1,14 +1,17 @@
-import { Controller, Get, Post, Body, BadRequestException, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, BadRequestException, UseGuards, Logger } from '@nestjs/common';
 import { LinkService } from './link.service';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiCookieAuth } from '@nestjs/swagger';
 import { AuthGuard as BetterAuthGuard, OptionalAuth, Session } from '@thallesp/nestjs-better-auth';
 import { Public } from '../auth/constants';
 import { LinkResponseDto, ChallengeResponseDto } from './link.dto';
 import type { LinkSession } from './link.types';
+import { auth } from './auth';
 
 @ApiTags('Link')
 @Controller('link')
 export class LinkController {
+  private readonly logger = new Logger(LinkController.name);
+
   constructor(private readonly linkService: LinkService) {}
 
   /**
@@ -23,7 +26,17 @@ export class LinkController {
   @ApiCookieAuth()
   async getChallenge(@Session() session: LinkSession): Promise<ChallengeResponseDto> {
     const challenge = await this.linkService.generateChallenge();
-    session.challenge = challenge;
+
+    // Persist the challenge on the better-auth session row so it can be verified
+    // on a subsequent /response request. Mutating the in-memory `session` object
+    // is not enough — better-auth reloads the session from storage on each request,
+    // so we must write through the internal adapter.
+    const ctx = await auth.$context;
+    await ctx.internalAdapter.updateSession(session.session.token, { challenge });
+
+    this.logger.log(
+      `getChallenge: issued challenge for sessionId=${session?.session?.id} userId=${session?.user?.id} challenge=${challenge}`,
+    );
     return { challenge };
   }
 
@@ -43,16 +56,33 @@ export class LinkController {
   @ApiResponse({ status: 404, description: 'User email not found in player directory.' })
   @ApiCookieAuth()
   async linkResponse(@Session() session: LinkSession, @Body() body: LinkResponseDto) {
+    this.logger.log(
+      `linkResponse: incoming request sessionId=${session?.session?.id} userId=${session?.user?.id} email=${session?.user?.email} emailVerified=${session?.user?.emailVerified} hasChallengeInSession=${!!session?.session?.challenge}`,
+    );
+    this.logger.log(`linkResponse: session=${JSON.stringify(session)}`);
+
     if (!session?.user?.emailVerified) {
+      this.logger.warn(
+        `linkResponse: email not verified sessionId=${session?.session?.id} userId=${session?.user?.id}`,
+      );
       throw new BadRequestException('Email must be verified to link device and wallet.');
     }
 
     const { walletAddress, ...integrityData } = body;
-    const challenge = session.challenge;
+    const challenge = session.session.challenge;
 
     if (!challenge) {
+      this.logger.warn(
+        `linkResponse: no challenge found in session sessionId=${session?.session?.id} userId=${session?.user?.id}. ` +
+          `This typically indicates the session does not match the one used for /challenge ` +
+          `(e.g. mobile app cookies are not being persisted/sent between requests).`,
+      );
       throw new BadRequestException('No challenge found for this session. Please request a challenge first.');
     }
+
+    this.logger.log(
+      `linkResponse: challenge found in session sessionId=${session?.session?.id} userId=${session?.user?.id} challenge=${challenge}`,
+    );
 
     const email = session.user.email;
 

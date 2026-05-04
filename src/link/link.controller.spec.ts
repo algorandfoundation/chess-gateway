@@ -1,4 +1,16 @@
 import { Test, TestingModule } from '@nestjs/testing';
+
+const mockUpdateSession = jest.fn();
+jest.mock('./auth', () => ({
+  auth: {
+    $context: Promise.resolve({
+      internalAdapter: {
+        updateSession: mockUpdateSession,
+      },
+    }),
+  },
+}));
+
 import { LinkController } from './link.controller';
 import { LinkService } from './link.service';
 import { BadRequestException } from '@nestjs/common';
@@ -61,11 +73,25 @@ describe('LinkController', () => {
   });
 
   describe('getChallenge', () => {
-    it('should return a challenge from the service', async () => {
+    it('should return a challenge from the service and persist it on the session', async () => {
       mockLinkService.generateChallenge.mockResolvedValue('challenge123');
       const result = await controller.getChallenge(mockSession);
       expect(result).toEqual({ challenge: 'challenge123' });
       expect(service.generateChallenge).toHaveBeenCalled();
+      expect(mockUpdateSession).toHaveBeenCalledWith(mockSession.session.token, { challenge: 'challenge123' });
+    });
+
+    it('should persist the challenge keyed by the inner session token (not the outer object)', async () => {
+      mockLinkService.generateChallenge.mockResolvedValue('chal-path-check');
+      await controller.getChallenge(mockSession);
+
+      expect(mockUpdateSession).toHaveBeenCalledTimes(1);
+      const [tokenArg, updateArg] = mockUpdateSession.mock.calls[0];
+      // Path check: must use session.session.token, NOT session.token (which doesn't exist)
+      expect(tokenArg).toBe(mockSession.session.token);
+      expect(tokenArg).not.toBe((mockSession as any).token);
+      // Path check: challenge is written at the top level of the update payload (becomes a column on the session row)
+      expect(updateArg).toEqual({ challenge: 'chal-path-check' });
     });
   });
 
@@ -73,7 +99,7 @@ describe('LinkController', () => {
     it('should return success if email is verified, challenge is in session and service call succeeds', async () => {
       const mockResult = { success: true };
       mockLinkService.linkResponse.mockResolvedValue(mockResult);
-      const sessionWithChallenge = { ...mockSession, challenge: 'challenge123' };
+      const sessionWithChallenge = { ...mockSession, session: { ...mockSession.session, challenge: 'challenge123' } };
       const result = await controller.linkResponse(sessionWithChallenge as any, {
         walletAddress: '0xWallet',
         integrityToken: 'token',
@@ -91,7 +117,7 @@ describe('LinkController', () => {
     });
 
     it('should throw BadRequestException if challenge is missing in session', async () => {
-      const sessionWithoutChallenge = { ...mockSession, challenge: undefined };
+      const sessionWithoutChallenge = { ...mockSession, session: { ...mockSession.session, challenge: undefined } };
       await expect(
         controller.linkResponse(sessionWithoutChallenge as any, {
           walletAddress: '0xWallet',
@@ -111,6 +137,65 @@ describe('LinkController', () => {
           integrityToken: 'token',
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should reject when challenge is on the wrong path (outer session, not session.session)', async () => {
+      // If a future refactor accidentally reads `session.challenge` instead of
+      // `session.session.challenge`, this test will catch it.
+      const wrongPathSession = {
+        ...mockSession,
+        challenge: 'wrong-path-challenge',
+        session: { ...mockSession.session, challenge: undefined },
+      };
+      await expect(
+        controller.linkResponse(wrongPathSession as any, {
+          walletAddress: '0xWallet',
+          integrityToken: 'token',
+        }),
+      ).rejects.toThrow(BadRequestException);
+      expect(service.linkResponse).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('challenge end-to-end (getChallenge -> linkResponse)', () => {
+    it('should persist the challenge via getChallenge and read it back via linkResponse from session.session.challenge', async () => {
+      // Step 1: getChallenge issues a challenge and persists it via internalAdapter.updateSession.
+      mockLinkService.generateChallenge.mockResolvedValue('e2e-challenge');
+      const challengeResp = await controller.getChallenge(mockSession);
+      expect(challengeResp).toEqual({ challenge: 'e2e-challenge' });
+
+      // Capture what was persisted and to which token.
+      expect(mockUpdateSession).toHaveBeenCalledTimes(1);
+      const [persistedToken, persistedPayload] = mockUpdateSession.mock.calls[0];
+      expect(persistedToken).toBe(mockSession.session.token);
+      expect(persistedPayload).toEqual({ challenge: 'e2e-challenge' });
+
+      // Step 2: simulate better-auth reloading the session row on the next request.
+      // Additional fields land on the inner session object, so we mirror that here.
+      const reloadedSession: LinkSession = {
+        ...mockSession,
+        session: {
+          ...mockSession.session,
+          challenge: persistedPayload.challenge,
+        },
+      };
+
+      // Step 3: linkResponse should read the challenge from session.session.challenge
+      // and forward it to the service unchanged.
+      mockLinkService.linkResponse.mockResolvedValue({ success: true });
+      const result = await controller.linkResponse(reloadedSession, {
+        walletAddress: '0xWallet',
+        integrityToken: 'token',
+      });
+
+      expect(result).toEqual({ success: true });
+      expect(service.linkResponse).toHaveBeenCalledWith(
+        'user123',
+        'test@example.com',
+        '0xWallet',
+        { integrityToken: 'token' },
+        'e2e-challenge',
+      );
     });
   });
 

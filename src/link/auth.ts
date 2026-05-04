@@ -88,6 +88,15 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
   },
+  session: {
+    additionalFields: {
+      challenge: {
+        type: 'string',
+        required: false,
+        input: false,
+      },
+    },
+  },
   socialProviders: {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID || 'mock-id',
