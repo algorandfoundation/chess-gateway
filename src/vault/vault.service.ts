@@ -53,11 +53,9 @@ export class VaultService {
     // https://developer.hashicorp.com/vault/api-docs/secret/transit#create-key
     const baseUrl: string = this.configService.get<string>('VAULT_BASE_URL');
 
-    let result: AxiosResponse;
-
     const url: string = `${baseUrl}/v1/${transitKeyPath}/keys/${keyName}`;
     try {
-      result = await this.httpService.axiosRef.post(
+      await this.httpService.axiosRef.post(
         url,
         {
           type: 'ed25519',
@@ -72,8 +70,9 @@ export class VaultService {
       throw new HttpErrorByCode[error.response.status]('VaultException');
     }
 
-    const publicKeyBase64: string = result.data.data.keys['1'].public_key;
-    return Buffer.from(publicKeyBase64, 'base64');
+    // Vault's create-key endpoint returns 204 No Content, so we must read the
+    // key back to obtain its public key material.
+    return this.getKey(keyName, transitKeyPath, token);
   }
 
   /**

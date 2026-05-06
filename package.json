@@ -1,7 +1,11 @@
 {
-  "name": "pawn",
+  "name": "chess-gateway",
   "version": "0.0.2",
   "description": "",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com:algorandfoundation/chess-gateway.git"
+  },
   "author": "",
   "private": true,
   "license": "UNLICENSED",
@@ -52,6 +56,8 @@
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.1.18",
+    "@algorandfoundation/algokit-client-generator": "7.0.0-alpha.5",
+    "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.2",
     "@types/js-sha512": "^0.8.0",
@@ -85,6 +91,10 @@
       "mjs"
     ],
     "rootDir": "src",
+    "roots": [
+      "<rootDir>",
+      "<rootDir>/../libs"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)sx?$": [

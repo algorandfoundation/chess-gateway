@@ -5,6 +5,7 @@ import { VaultService } from '../vault/vault.service';
 import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
+import { DidService } from '../did/did.service';
 
 describe('LinkService', () => {
   let service: LinkService;
@@ -27,6 +28,12 @@ describe('LinkService', () => {
     getTokenWithRole: jest.fn(),
     getKeys: jest.fn(),
     getKey: jest.fn(),
+    getUserPublicKey: jest.fn(),
+  };
+
+  const mockDidService = {
+    hasOnChainDocument: jest.fn(),
+    publishUserDid: jest.fn(),
   };
 
   const mockAuthService = {
@@ -57,6 +64,10 @@ describe('LinkService', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: DidService,
+          useValue: mockDidService,
+        },
       ],
     }).compile();
 
@@ -78,6 +89,9 @@ describe('LinkService', () => {
     it('should associate account and link wallet if user ID is found and integrity is verified', async () => {
       mockAuthService.getUserIdByEmail.mockResolvedValue('player123');
       mockVerificationService.upsert.mockResolvedValue({ id: 'player123', walletAddress: '0xWallet' });
+      mockVaultService.getTokenWithRole.mockResolvedValue('manager-token');
+      mockVaultService.getUserPublicKey.mockResolvedValue(Buffer.alloc(32));
+      mockDidService.hasOnChainDocument.mockResolvedValue(false);
 
       const result = await service.linkResponse(
         'user123',

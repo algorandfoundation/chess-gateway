@@ -1,16 +1,28 @@
+import 'dotenv/config';
 import * as fs from 'fs';
 import axios from 'axios';
 import assert from 'assert';
+import SQLite from 'better-sqlite3';
+import * as path from 'path';
 import { Address } from '@algorandfoundation/algokit-utils';
+import { ConfigService } from '@nestjs/config';
+import { HttpService } from '@nestjs/axios';
+import { DidAlgoStorageFactory } from '../libs/did-algo';
+import { buildAlgorandClient, prefundAccountIfLocalNet } from '../libs/algorand';
+import { VaultService } from '../src/vault/vault.service';
+import { ChainService } from '../src/chain/chain.service';
+import { buildVaultTransactionSigner } from '../src/did/vault-signer';
+import { updateEnvFile } from '../libs/env';
 
 // Constants
-const VAULT_BASE_URL = 'http://vault:8200';
+const VAULT_BASE_URL = process.env.VAULT_BASE_URL || 'http://localhost:8200';
+const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 const VAULT_INIT_ENDPOINT = '/v1/sys/init';
 const VAULT_UNSEAL_ENDPOINT = '/v1/sys/unseal';
 const VAULT_MOUNTS_ENDPOINT = '/v1/sys/mounts';
-const VAULT_TRANSIT_USERS_PATH = 'pawn/users';
-const VAULT_TRANSIT_MANAGERS_PATH = 'pawn/managers';
-const VAULT_MANAGER_KEY = 'manager';
+const VAULT_TRANSIT_USERS_PATH = process.env.VAULT_TRANSIT_USERS_PATH || 'pawn/users';
+const VAULT_TRANSIT_MANAGERS_PATH = process.env.VAULT_TRANSIT_MANAGERS_PATH || 'pawn/managers';
+const VAULT_MANAGER_KEY = process.env.VAULT_MANAGER_KEY || 'manager';
 const VAULT_SEAL_KEYS_FILE = 'vault-seal-keys.json';
 
 const MANAGERS_ROLE_AND_SECRET_KEYS_FILE = 'manager-role-and-secrets.json';
@@ -344,86 +356,79 @@ async function checkAppRoleExists(roleName: string, root_token: string): Promise
 }
 
 async function getOrCreateAppRoles(root_token: string) {
-  try {
-    const appRoles = [
-      {
-        name: USERS_APP_ROLE_NAME,
-        policies: [USERS_POLICY_NAME],
-      },
-      {
-        name: MANAGERS_APP_ROLE_NAME,
-        policies: [MANAGERS_POLICY_NAME],
-      },
-    ];
+  const appRoles = [
+    {
+      name: USERS_APP_ROLE_NAME,
+      policies: [USERS_POLICY_NAME],
+    },
+    {
+      name: MANAGERS_APP_ROLE_NAME,
+      policies: [MANAGERS_POLICY_NAME],
+    },
+  ];
 
-    for (const appRole of appRoles) {
-      const roleExists = await checkAppRoleExists(appRole.name, root_token);
-      if (!roleExists) {
-        await axios.post(
-          `${VAULT_BASE_URL}/v1/auth/approle/role/${appRole.name}`,
-          {
-            policies: appRole.policies,
-            token_type: 'batch',
+  for (const appRole of appRoles) {
+    const roleExists = await checkAppRoleExists(appRole.name, root_token);
+    if (!roleExists) {
+      await axios.post(
+        `${VAULT_BASE_URL}/v1/auth/approle/role/${appRole.name}`,
+        {
+          policies: appRole.policies,
+          token_type: 'batch',
+        },
+        {
+          headers: {
+            'X-Vault-Token': root_token,
           },
-          {
-            headers: {
-              'X-Vault-Token': root_token,
-            },
-          },
-        );
-        console.log(`AppRole '${appRole.name}' created successfully`);
-      } else {
-        console.log(`PASS: AppRole '${appRole.name}' already exists`);
-      }
+        },
+      );
+      console.log(`AppRole '${appRole.name}' created successfully`);
+    } else {
+      console.log(`PASS: AppRole '${appRole.name}' already exists`);
     }
-  } catch (error) {
-    console.error('Failed to create or check AppRoles:', error);
   }
 }
 
 async function logRoleIdAndSecretId(role_name: string, token: string, store_file_name: string) {
-  try {
-    // Get role_id
-    const roleIdResponse = await axios.get(`${VAULT_BASE_URL}/v1/auth/approle/role/${role_name}/role-id`, {
+  // Get role_id
+  const roleIdResponse = await axios.get(`${VAULT_BASE_URL}/v1/auth/approle/role/${role_name}/role-id`, {
+    headers: {
+      'X-Vault-Token': token,
+    },
+  });
+  const role_id = roleIdResponse.data.data.role_id;
+
+  // Get secret_id
+  const secretIdResponse = await axios.post(
+    `${VAULT_BASE_URL}/v1/auth/approle/role/${role_name}/secret-id`,
+    {},
+    {
       headers: {
         'X-Vault-Token': token,
       },
-    });
-    const role_id = roleIdResponse.data.data.role_id;
+    },
+  );
+  const secret_id = secretIdResponse.data.data.secret_id;
 
-    // Get secret_id
-    const secretIdResponse = await axios.post(
-      `${VAULT_BASE_URL}/v1/auth/approle/role/${role_name}/secret-id`,
-      {},
-      {
-        headers: {
-          'X-Vault-Token': token,
-        },
-      },
-    );
-    const secret_id = secretIdResponse.data.data.secret_id;
+  fs.writeFileSync(
+    store_file_name,
+    JSON.stringify({
+      role_id,
+      secret_id,
+    }),
+  );
 
-    fs.writeFileSync(
-      store_file_name,
-      JSON.stringify({
-        role_id,
-        secret_id,
-      }),
-    );
-
-    console.log(`\n${role_name}' - Role ID:    ->\t`, role_id);
-    console.log(`'${role_name}' - Secret ID: ->\t`, secret_id);
-    console.log(
-      `You can get vault token ('auth.client_token') using \n\nPOST http://localhost:8200/v1/auth/approle/login\n{\n  "role_id": "${role_id}",\n  "secret_id": "${secret_id}"\n}\n`,
-    );
-  } catch (error) {
-    console.error(`Failed to login with AppRole '${role_name}':`, error);
-  }
+  console.log(`\n${role_name}' - Role ID:    ->\t`, role_id);
+  console.log(`'${role_name}' - Secret ID: ->\t`, secret_id);
+  console.log(
+    `You can get vault token ('auth.client_token') using \n\nPOST ${VAULT_BASE_URL}/v1/auth/approle/login\n{\n  "role_id": "${role_id}",\n  "secret_id": "${secret_id}"\n}\n`,
+  );
 }
 
-async function getOrCreateManager(token: string) {
-  const url: string = `${VAULT_BASE_URL}/v1/${VAULT_TRANSIT_MANAGERS_PATH}/keys/${VAULT_MANAGER_KEY}`;
-  const response = await axios.post(
+async function getOrCreateKey(transitPath: string, keyName: string, token: string): Promise<Uint8Array> {
+  const url: string = `${VAULT_BASE_URL}/v1/${transitPath}/keys/${keyName}`;
+  // Vault transit POST /keys/{name} returns 204 No Content on success (create or idempotent re-create).
+  const createResponse = await axios.post(
     url,
     {
       type: 'ed25519',
@@ -432,15 +437,48 @@ async function getOrCreateManager(token: string) {
     },
     {
       headers: { 'X-Vault-Token': token },
+      validateStatus: (s) => s === 200 || s === 204,
     },
   );
-  assert(response.status == 200);
+  assert(createResponse.status === 200 || createResponse.status === 204);
+
+  // Fetch the key material in a separate GET (POST does not return the public key).
+  const readResponse = await axios.get(url, {
+    headers: { 'X-Vault-Token': token },
+  });
+  assert(readResponse.status === 200);
 
   const publicKey = new Address(Buffer.from(response.data.data.keys['1'].public_key, 'base64')).toString();
   // Persist the manager Algorand address so external tooling (e.g. CI) can
   // prefund it from a LocalNet dispenser without having to re-derive it.
   fs.writeFileSync(MANAGER_ADDRESS_FILE, publicKey);
   console.log('Manager public key: \n', publicKey);
+  const publicKeyBytes = Buffer.from(readResponse.data.data.keys['1'].public_key, 'base64');
+  const publicKey = new Address(publicKeyBytes).toString();
+  console.log(`${keyName} public key (${transitPath}): \n`, publicKey);
+
+  return new Uint8Array(publicKeyBytes);
+}
+
+async function getOrCreateManager(token: string): Promise<Uint8Array> {
+  return await getOrCreateKey(VAULT_TRANSIT_MANAGERS_PATH, VAULT_MANAGER_KEY, token);
+}
+
+async function getOrCreateUser(name: string, token: string): Promise<Uint8Array> {
+  return await getOrCreateKey(VAULT_TRANSIT_USERS_PATH, name, token);
+}
+
+// Function to get Vault status
+async function getVaultStatus() {
+  try {
+    const response = await axios.get(`${VAULT_BASE_URL}/v1/sys/health`, {
+      validateStatus: (status) => status < 600,
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Failed to check Vault health:', error);
+    return null;
+  }
 }
 
 // Main function
@@ -487,8 +525,157 @@ async function main() {
   await logRoleIdAndSecretId(USERS_APP_ROLE_NAME, sealKeys.root_token, USERS_ROLE_AND_SECRET_KEYS_FILE);
   console.log('\n\n\nMANAGER SECRETS\n-----');
   await logRoleIdAndSecretId(MANAGERS_APP_ROLE_NAME, sealKeys.root_token, MANAGERS_ROLE_AND_SECRET_KEYS_FILE);
+
   console.log('\n\n\nMANAGER ALGORAND PUBLIC ADDRESS\n------');
-  await getOrCreateManager(sealKeys.root_token);
+  const managerPubKey = await getOrCreateManager(sealKeys.root_token);
+  const managerAddress = new Address(managerPubKey);
+
+  // Setup services and signer
+  const config = new ConfigService(process.env);
+  const http = { axiosRef: axios.create() } as unknown as HttpService;
+  const vault = new VaultService(http, config);
+  const chain = new ChainService(config, http);
+  const signer = buildVaultTransactionSigner(chain, (bytes) => vault.signAsManager(bytes, sealKeys.root_token));
+
+  const algorand = buildAlgorandClient();
+  algorand.setSigner(managerAddress, signer);
+  algorand.setDefaultSigner(signer);
+
+  // 1. Prefund Manager
+  await prefundAccountIfLocalNet(algorand, managerAddress, 1000);
+
+  console.log('\n\n\nDEVELOPMENT USERS\n------');
+  await getOrCreateUser('alice', sealKeys.root_token);
+  await getOrCreateUser('bob', sealKeys.root_token);
+  await getOrCreateUser('charlie', sealKeys.root_token);
+
+  // Application check / deployment
+  let appId = process.env.DID_ALGO_APP_ID;
+  let appFound = false;
+
+  if (appId && appId !== '0' && appId !== '1337') {
+    try {
+      const appInfo = await algorand.app.getById(BigInt(appId));
+      if (appInfo.creator.toString() !== managerAddress.toString()) {
+        console.error('\nERROR: Existing contract found but the manager has changed.');
+        console.error(`Contract App ID ${appId} was created by ${appInfo.creator}`);
+        console.error(`Current Vault Manager address is ${managerAddress.toString()}`);
+        console.error('\nPlease run: algokit localnet reset');
+        process.exit(1);
+      }
+      console.log(`PASS: DIDAlgoStorage Application ${appId} is owned by the current manager.`);
+      appFound = true;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    } catch (err) {
+      console.warn(`\nWARNING: Could not find DID_ALGO_APP_ID ${appId}. Triggering deployment...`);
+    }
+  }
+
+  if (!appFound) {
+    console.log('\nDeploying new DIDAlgoStorage application...');
+
+    const factory = new DidAlgoStorageFactory({
+      algorand,
+      defaultSender: managerAddress,
+      defaultSigner: signer,
+    });
+
+    const { appClient } = await factory.deploy({
+      onUpdate: 'append',
+      onSchemaBreak: 'append',
+      existingDeployments: {
+        creator: managerAddress,
+        apps: {},
+      },
+    });
+
+    appId = appClient.appId.toString();
+    console.log(`Successfully deployed DIDAlgoStorage. App ID: ${appId}`);
+
+    // 2. Fund the contract address
+    await prefundAccountIfLocalNet(algorand, appClient.appAddress, 1000);
+
+    updateEnvFile('DID_ALGO_APP_ID', appId);
+    process.env.DID_ALGO_APP_ID = appId;
+  }
+
+  // Database initialization for development users
+  const dbPath = path.join(process.cwd(), 'database.sqlite');
+  console.log(`\nInitializing development users in database: ${dbPath}`);
+  const db = new SQLite(dbPath);
+  const now = new Date().toISOString();
+
+  // Alice: registered user to the sql database without a DID.
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `,
+  ).run('alice', 'Alice', 'alice@example.com', 1, now, now);
+  console.log('Alice registered in database (no DID)');
+  db.close();
+
+  // Bob: publish a DID via the live API, mirroring how a real client would.
+  // The pawn container runs both this init script and the API on the same
+  // host, so we hit `API_BASE_URL` (defaults to http://localhost:3000) using
+  // the manager AppRole credentials we just wrote to disk.
+  const managerCreds = JSON.parse(fs.readFileSync(MANAGERS_ROLE_AND_SECRET_KEYS_FILE).toString()) as {
+    role_id: string;
+    secret_id: string;
+  };
+
+  await waitForApi(API_BASE_URL);
+
+  console.log(`\nLogging into API to publish DID for Bob via ${API_BASE_URL}...`);
+  const apiVaultToken = await vaultApproleLogin(managerCreds);
+  const accessToken = await apiSignIn(apiVaultToken);
+  const bobInfo = await createUserViaApi(accessToken, 'bob');
+  console.log(`Bob created via API. did=${bobInfo?.did ?? 'null'} address=${bobInfo?.public_address ?? 'n/a'}`);
+  if (!bobInfo?.did) {
+    throw new Error(`Expected DID for Bob in API response, got: ${JSON.stringify(bobInfo)}`);
+  }
+}
+
+async function vaultApproleLogin(creds: { role_id: string; secret_id: string }): Promise<string> {
+  const response = await axios.post(`${VAULT_BASE_URL}/v1/auth/approle/login`, creds);
+  const token = response.data?.auth?.client_token;
+  if (!token) {
+    throw new Error(`Vault AppRole login did not return a client_token (status=${response.status})`);
+  }
+  return token;
+}
+
+async function apiSignIn(vaultToken: string): Promise<string> {
+  const response = await axios.post(`${API_BASE_URL}/v1/auth/sign-in/`, { vault_token: vaultToken });
+  const accessToken = response.data?.access_token;
+  if (!accessToken) {
+    throw new Error(`API sign-in did not return an access_token (status=${response.status})`);
+  }
+  return accessToken;
+}
+
+async function createUserViaApi(accessToken: string, userId: string): Promise<any> {
+  const response = await axios.post(
+    `${API_BASE_URL}/v1/wallet/user/`,
+    { user_id: userId },
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  return response.data;
+}
+
+async function waitForApi(baseUrl: string, attempts = 60, delayMs = 1000): Promise<void> {
+  const url = `${baseUrl}/v1/auth/sign-in/`;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      // We expect 4xx (missing body / bad token) once the server is up — that's fine,
+      // we just want to know the HTTP listener is accepting connections.
+      await axios.post(url, {}, { validateStatus: () => true, timeout: 1500 });
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw new Error(`API at ${baseUrl} did not become reachable after ${attempts} attempts`);
 }
 
 // Run main function

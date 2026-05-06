@@ -1,6 +1,6 @@
-# Intermezzo
+# Chess Gateway
 
-Intermezzo uses a traditional KMS (Key Management Service) to manage the keys for Algorand transaction signing and integration. In this specific case, we are using Hashicorp Vault as the KMS.
+Chess Gateway uses a traditional KMS (Key Management Service) to manage the keys for Algorand transaction signing and integration. In this specific case, we are using Hashicorp Vault as the KMS.
 
 ## For whom is this?
 
@@ -191,14 +191,14 @@ Example response:
 > **Note**: The OTP is single-use and expires after `expiresIn` seconds (3600 by default — see `emailOTP({ ... })` in `src/link/auth.ts`).
 
 ## CLI mode
-Pawn also supports a CLI mode, in which you can use for a personal wallet and tool. 
+Pawn also supports a CLI mode, in which you can use for a personal wallet and tool.
 
 ```mermaid
     C4Context
         title "CLI"
         Boundary(b0, "Run-time", "Local Machine") {
 
-            Boundary(b1, "Pawn", "NodeJS") {
+            Boundary(b1, "pawn", "NodeJS") {
                 System(app, "WalletCLI", "Interactive Console")
             }
 
@@ -376,18 +376,18 @@ algokit localnet reset
 ```
 # SECURITY
 
-It's important to understand that Intermezzo does **NOT** manage security for you. The integrator is responsible for securing the vault's instance, managing access policies or handling of any admin tokens.
+It's important to understand that Chess Gateway does **NOT** manage security for you. The integrator is responsible for securing the vault's instance, managing access policies or handling of any admin tokens.
 
 Hashicorp Vault has a lot of documentation on how to secure and configure your access policies. You can refer to the [Hashicorp Vault Security documentation](https://www.vaultproject.io/docs/security) or [Hashicorp Vault Access Policies documentation](https://www.vaultproject.io/docs/concepts/policies) for more information.
 
 ## User and Manager keys path
 
-Intermezzo uses two different paths for storing keys in vault. One for users and one for managers. These values are defined in the `.env` file as `VAULT_TRANSIT_USERS_PATH` and `VAULT_TRANSIT_MANAGERS_PATH`. Please configure these paths according to your security policies. 
+Chess Gateway uses two different paths for storing keys in vault. One for users and one for managers. These values are defined in the `.env` file as `VAULT_TRANSIT_USERS_PATH` and `VAULT_TRANSIT_MANAGERS_PATH`. Please configure these paths according to your security policies.
 
-When creating and access keys Intermezzo will append to those paths `/keys/{keyName}`. 
+When creating and access keys Chess Gateway will append to those paths `/keys/{keyName}`.
 
 ## Vault Configuration and Root token
 
-Although Intermezzo provides a development script to initialize vault, unseal and configure access policies, it's important to understand that this is only for development purposes. You can read the file `vault/development-init.ts` to see what actions are being performed and take that as reference for your own vault configuration.
+Although Chess Gateway provides a development script to initialize vault, unseal and configure access policies, it's important to understand that this is only for development purposes. You can read the file `vault/development-init.ts` to see what actions are being performed and take that as reference for your own vault configuration.
 
 In production, you should follow Hashicorp Vault's best practices for securing and configuring your vault instance.

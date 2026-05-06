@@ -8,12 +8,14 @@ import { AuthModule as BetterAuthModule } from '@thallesp/nestjs-better-auth';
 import { auth } from './auth';
 import { AuthService } from '../auth/auth.service';
 import { VerificationModule } from './verification/verification.module';
+import { DidModule } from '../did/did.module';
 @Module({
   imports: [
     BetterAuthModule.forRoot({ auth, disableGlobalAuthGuard: true }),
     VerificationModule,
     VaultModule,
     AuthModule,
+    DidModule,
     ConfigModule,
   ],
   controllers: [LinkController],

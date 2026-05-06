@@ -2,6 +2,8 @@ import createMockInstance from 'jest-create-mock-instance';
 import { VaultService } from '../vault/vault.service';
 import { WalletService } from './wallet.service';
 import { ChainService } from '../chain/chain.service';
+import { DidService } from '../did/did.service';
+import { VerificationService } from '../link/verification/verification.service';
 import { CreateAssetDto } from './create-asset.dto';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
@@ -20,6 +22,8 @@ describe('WalletService', () => {
   let vaultServiceMock: jest.Mocked<VaultService>;
   let chainServiceMock: jest.Mocked<ChainService>;
   let configServiceMock: jest.Mocked<ConfigService>;
+  let didServiceMock: jest.Mocked<DidService>;
+  let verificationServiceMock: jest.Mocked<VerificationService>;
 
   let chainService: ChainService;
   let httpService: HttpService;
@@ -28,7 +32,26 @@ describe('WalletService', () => {
     vaultServiceMock = createMockInstance(VaultService);
     chainServiceMock = createMockInstance(ChainService);
     configServiceMock = createMockInstance(ConfigService);
-    walletService = new WalletService(vaultServiceMock, chainServiceMock, configServiceMock);
+    didServiceMock = createMockInstance(DidService);
+    // Default DID-publish stub: a successful publication so userCreate() tests
+    // observe the new `did` field but legacy expectations (which omitted it)
+    // can opt out by deleting it from the result before assertion.
+    didServiceMock.publishUserDid.mockResolvedValue({
+      did: 'did:algo:test:app:1:00',
+      status: 'published',
+      document: {},
+      txIds: [],
+    });
+    didServiceMock.buildUserDidInfo.mockResolvedValue(null);
+    verificationServiceMock = createMockInstance(VerificationService);
+    verificationServiceMock.findByPlayerId.mockResolvedValue([]);
+    walletService = new WalletService(
+      vaultServiceMock,
+      chainServiceMock,
+      configServiceMock,
+      didServiceMock,
+      verificationServiceMock,
+    );
 
     httpService = createMockInstance(HttpService);
     chainService = new ChainService(configServiceMock, httpService);
@@ -61,10 +84,15 @@ describe('WalletService', () => {
 
     // expect(vaultServiceMock.getUserPublicKey).toHaveBeenCalledWith(userId, 'vault_token');
     // expect(chainServiceMock.getAccountBalance).toHaveBeenCalledWith(new Address(pubKey).toString());
+    expect(didServiceMock.publishUserDid).toHaveBeenCalledWith(
+      expect.objectContaining({ userId, vaultToken: 'vault_token' }),
+    );
     expect(result).toStrictEqual({
       public_address: new Address(pubKey).toString(),
       user_id: userId,
       algoBalance: '0',
+      did: 'did:algo:test:app:1:00',
+      wallet_address: null,
     });
   });
 
@@ -87,6 +115,8 @@ describe('WalletService', () => {
       {
         public_address: new Address(pubKey).toString(),
         user_id: userId,
+        did: null,
+        wallet_address: null,
       },
     ]);
   });
@@ -108,6 +138,8 @@ describe('WalletService', () => {
       public_address: new Address(pubKey).toString(),
       user_id: '123581253191824129481240513501928401928',
       algoBalance: algoBalanceMock.toString(),
+      did: null,
+      wallet_address: null,
     });
   });
 
