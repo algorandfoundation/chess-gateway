@@ -12,11 +12,7 @@
  * without churning every call site.
  */
 
-export {
-  DidAlgoStorageClient,
-  DidAlgoStorageFactory,
-  MetadataFromTuple,
-} from './contracts/DidAlgoStorageClient';
+export { DidAlgoStorageClient, DidAlgoStorageFactory, MetadataFromTuple } from './contracts/DidAlgoStorageClient';
 export type { Metadata } from './contracts/DidAlgoStorageClient';
 
 export {
@@ -31,11 +27,6 @@ export {
   MAX_TXNS_PER_GROUP,
 } from './uploadDIDDocument';
 
-export {
-  deleteDIDDocument,
-  DID_STATUS_UPLOADING,
-  DID_STATUS_READY,
-  DID_STATUS_DELETING,
-} from './deleteDIDDocument';
+export { deleteDIDDocument, DID_STATUS_UPLOADING, DID_STATUS_READY, DID_STATUS_DELETING } from './deleteDIDDocument';
 
 export { encodeUint64, genesisIdToNetwork, buildDidIdentifier } from './util';
