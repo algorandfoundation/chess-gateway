@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { VaultService } from '../vault/vault.service';
 import { ChainService } from '../chain/chain.service';
+import { DidService } from '../did/did.service';
+import { VerificationService } from '../link/verification/verification.service';
+import { LinkVerification } from '../link/verification/entities/link-verification.entity';
 import { CreateAssetDto } from './create-asset.dto';
 import { UserInfoResponseDto } from './user-info-response.dto';
 import { ConfigService } from '@nestjs/config';
@@ -16,7 +19,25 @@ export class WalletService {
     private readonly vaultService: VaultService,
     private readonly chainService: ChainService,
     private readonly configService: ConfigService,
+    private readonly didService: DidService,
+    private readonly verificationService: VerificationService,
   ) {}
+
+  /**
+   * Resolve the associated local wallet address for a user, if any.
+   * Returns `null` when no link verification record exists or when the
+   * most recent association did not supply a wallet address — callers
+   * always emit `wallet_address` (string or null) on responses.
+   */
+  private async resolveLinkedWalletAddress(user_id: string): Promise<string | null> {
+    const verifications: LinkVerification[] = await this.verificationService.findByPlayerId(user_id);
+    if (!verifications || verifications.length === 0) return null;
+    // Pick the most recently associated verification when multiple exist.
+    const verification = verifications.reduce((a, b) =>
+      a.associatedAt && b.associatedAt && a.associatedAt > b.associatedAt ? a : b,
+    );
+    return verification.walletAddress ? verification.walletAddress : null;
+  }
 
   async getUserInfo(user_id: string, vault_token: string): Promise<UserInfoResponseDto> {
     const public_address = await this.vaultService.getUserPublicKey(user_id, vault_token);
@@ -26,10 +47,14 @@ export class WalletService {
     const algoBalance: bigint = await this.chainService.getAccountBalance(encodedAddress);
     Logger.debug(`User ${user_id} Algo Balance: ${algoBalance}`);
 
+    const did = await this.didService.buildUserDidInfo(user_id);
+    const wallet_address = await this.resolveLinkedWalletAddress(user_id);
     return {
       user_id,
       public_address: encodedAddress,
       algoBalance: algoBalance.toString(),
+      did,
+      wallet_address,
     };
   }
 
@@ -60,19 +85,41 @@ export class WalletService {
 
     const public_key: Buffer = await this.vaultService.transitCreateKey(user_id, transitKeyPath, vault_token);
     const public_address: string = new Address(public_key).toString();
-    return { user_id, public_address, algoBalance: '0' }; // Initial balance is set to 0
+
+    // Publish the new user's DID document on the did:algo registry.
+    // Any failure here propagates and aborts user creation — we will not
+    // leave a user behind without a valid on-chain DID.
+    const publication = await this.didService.publishUserDid({
+      userId: user_id,
+      publicKey: new Uint8Array(public_key),
+      vaultToken: vault_token,
+    });
+
+    const wallet_address = await this.resolveLinkedWalletAddress(user_id);
+    return {
+      user_id,
+      public_address,
+      algoBalance: '0',
+      did: publication.did ?? null,
+      wallet_address,
+    };
   }
 
   // Get all users
   async getKeys(vault_token: string): Promise<UserInfoResponseDto[]> {
     const keys: UserInfoResponseDto[] = (await this.vaultService.getKeys(vault_token)) as UserInfoResponseDto[];
 
-    // convert all public keys to algorand address
-    keys.map((key) => {
-      key.public_address = new Address(Buffer.from(key.public_address, 'base64')).toString();
-    });
-
-    return keys;
+    // Enrich each entry: convert raw vault public key bytes to an Algorand
+    // address and attach the DID and link/verification status so the list
+    // endpoint exposes the same shape as the per-user detail endpoint.
+    return Promise.all(
+      keys.map(async (key) => {
+        key.public_address = new Address(Buffer.from(key.public_address, 'base64')).toString();
+        key.did = await this.didService.buildUserDidInfo(key.user_id);
+        key.wallet_address = await this.resolveLinkedWalletAddress(key.user_id);
+        return key;
+      }),
+    );
   }
   /**
    *

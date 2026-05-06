@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsOptional, IsString } from 'class-validator';
 
 export class UserInfoResponseDto {
   @IsString()
@@ -23,4 +23,32 @@ export class UserInfoResponseDto {
     description: 'The balance of Algorand held by the User in microAlgos',
   })
   algoBalance: string;
+
+  /**
+   * Fully-qualified `did:algo` identifier published for this user, or
+   * `null` when no DID has been published yet (e.g. legacy accounts).
+   */
+  @IsOptional()
+  @IsString()
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: 'did:algo:localnet:app:1234:abcd...',
+    description: 'Fully-qualified did:algo identifier for the user, or null if none.',
+  })
+  did?: string | null;
+
+  /**
+   * Wallet address provided during the link flow. `null` when the Vault
+   * player has not yet been associated with an authenticated account
+   * that supplied a local wallet address.
+   */
+  @IsOptional()
+  @IsString()
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'Associated local wallet address, or null if the user has not linked one.',
+  })
+  wallet_address: string | null;
 }

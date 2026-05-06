@@ -1,6 +1,6 @@
-FROM node:22-alpine
+FROM node:24-alpine
 
-RUN apk add --no-cache python3 make g++ pkgconfig build-base linux-headers
+RUN apk add --no-cache python3 make g++ pkgconfig build-base linux-headers libc6-compat
 
 RUN mkdir -p /opt/app && \
     mkdir -p /data/db && \

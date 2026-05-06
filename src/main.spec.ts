@@ -67,6 +67,7 @@ describe('Main bootstrap', () => {
     }));
 
     // Dynamically import main.ts so that bootstrap runs with our mocks in place.
+    // @ts-expect-error, we are using modern CJS in Jest contexts
     await import('./main');
   });
 

@@ -5,6 +5,7 @@ import { VaultModule } from './vault/vault.module';
 import { ChainModule } from './chain/chain.module';
 import { AuthModule } from './auth/auth.module';
 import { LinkModule } from './link/link.module';
+import { DidModule } from './did/did.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 @Module({
@@ -21,6 +22,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
     WalletModule,
     VaultModule,
     ChainModule,
+    DidModule,
   ],
   controllers: [],
   providers: [],

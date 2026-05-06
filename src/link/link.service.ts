@@ -4,6 +4,7 @@ import { LinkVerification } from './verification/entities/link-verification.enti
 import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { VaultService } from '../vault/vault.service';
+import { DidService } from '../did/did.service';
 
 @Injectable()
 export class LinkService {
@@ -13,7 +14,33 @@ export class LinkService {
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
     private readonly vaultService: VaultService,
+    private readonly didService: DidService,
   ) {}
+
+  /**
+   * Force-republish the player's DID document so its `alsoKnownAs`
+   * reflects the freshly linked wallet. Skips republish (with a log) if
+   * the player has no on-chain document yet — `publishUserDid` will
+   * pick up the linked wallet on the next regular publish.
+   */
+  private async republishDidWithLink(playerId: string): Promise<void> {
+    const roleId = this.configService.get<string>('VAULT_ROLE_ID');
+    const secretId = this.configService.get<string>('VAULT_SECRET_ID');
+    const token = await this.vaultService.getTokenWithRole(roleId, secretId);
+    const publicKey = await this.vaultService.getUserPublicKey(playerId, token);
+    const hasDoc = await this.didService.hasOnChainDocument(new Uint8Array(publicKey));
+    if (!hasDoc) {
+      this.logger.log(`No on-chain DID document for player ${playerId}; skipping link republish.`);
+      return;
+    }
+    await this.didService.publishUserDid({
+      userId: playerId,
+      publicKey: new Uint8Array(publicKey),
+      vaultToken: token,
+      force: true,
+    });
+    this.logger.log(`Republished DID document for player ${playerId} with linked wallet.`);
+  }
 
   /**
    * Links a device and wallet by verifying app integrity, associating the account, and linking the wallet.
@@ -40,7 +67,12 @@ export class LinkService {
       throw new NotFoundException(`Email ${email} not found in the player directory.`);
     }
 
-    return this.verificationService.upsert(userId, id, true, walletAddress);
+    const verification = await this.verificationService.upsert(userId, id, true, walletAddress);
+    // Republish the DID document so the linked wallet shows up under
+    // `alsoKnownAs`. Failures propagate so callers see link/DID drift
+    // immediately instead of silently.
+    await this.republishDidWithLink(id);
+    return verification;
   }
 
   /**

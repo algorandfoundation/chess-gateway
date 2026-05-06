@@ -1,7 +1,7 @@
 services:
 
   vault:
-    image: hashicorp/vault:latest
+    image: hashicorp/vault:1.2.6
     container_name: vault
     ports:
       - "8200:8200"
@@ -28,5 +28,8 @@ services:
       - .env
     volumes:
       - .:/opt/app/
+      - /opt/app/node_modules/
     ports:
       - "3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

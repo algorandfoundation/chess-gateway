@@ -1,7 +1,11 @@
 {
-  "name": "pawn",
+  "name": "chess-gateway",
   "version": "0.0.2",
   "description": "",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com:algorandfoundation/chess-gateway.git"
+  },
   "author": "",
   "private": true,
   "license": "UNLICENSED",
@@ -21,10 +25,11 @@
     "test:cov:jsonSummary": "jest --coverage --coverageReporters json-summary",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "vault:development:init": "npx tsx vault/development-init.ts"
+    "vault:development:init": "npx ts-node vault/development-init.ts",
+    "api:test:create-user": "npx ts-node scripts/create-test-user.ts"
   },
   "dependencies": {
-    "@algorandfoundation/algokit-utils": "10.0.0-alpha.29",
+    "@algorandfoundation/algokit-utils": "10.0.0-beta.2",
     "@nestjs/axios": "^3.1.3",
     "@nestjs/common": "11.0.16",
     "@nestjs/config": "^3.3.0",
@@ -48,6 +53,7 @@
     "typeorm": "^0.3.28"
   },
   "devDependencies": {
+    "@algorandfoundation/algokit-client-generator": "7.0.0-alpha.5",
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
     "@nestjs/testing": "^10.0.0",
@@ -81,19 +87,41 @@
       "mjs"
     ],
     "rootDir": "src",
+    "roots": [
+      "<rootDir>",
+      "<rootDir>/../libs"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)sx?$": ["ts-jest", { "tsconfig": { "module": "commonjs", "moduleResolution": "node" } }],
-      "^.+\\.mjs$": ["ts-jest", { "tsconfig": { "module": "commonjs", "moduleResolution": "node" } }]
+      "^.+\\.(t|j)sx?$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "commonjs",
+            "moduleResolution": "node"
+          }
+        }
+      ],
+      "^.+\\.mjs$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "commonjs",
+            "moduleResolution": "node"
+          }
+        }
+      ]
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "./coverage",
     "testEnvironment": "node",
-    "setupFilesAfterEnv": ["<rootDir>/../test/setup.ts"],
+    "setupFilesAfterEnv": [
+      "<rootDir>/../test/setup.ts"
+    ],
     "transformIgnorePatterns": [
-      "node_modules/(?!(@thallesp/nestjs-better-auth|better-auth)/)"
+      "node_modules/(?!(@thallesp/nestjs-better-auth|better-auth|@algorandfoundation/algokit-utils|@noble)/)"
     ],
     "coveragePathIgnorePatterns": [
       "/node_modules/",
