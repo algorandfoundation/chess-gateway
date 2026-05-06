@@ -1,11 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { LinkService } from './link.service';
 import { VerificationService } from './verification/verification.service';
-import { LinkVerification } from './verification/entities/link-verification.entity';
 import { VaultService } from '../vault/vault.service';
 import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
-import { Repository } from 'typeorm';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { DidService } from '../did/did.service';
 
@@ -14,6 +12,7 @@ describe('LinkService', () => {
   let verificationService: VerificationService;
   let vaultService: VaultService;
   let authService: AuthService;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let configService: ConfigService;
 
   const mockVerificationService = {

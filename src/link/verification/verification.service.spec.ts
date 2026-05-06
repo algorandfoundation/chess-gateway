@@ -7,6 +7,7 @@ import { NotFoundException } from '@nestjs/common';
 
 describe('VerificationService', () => {
   let service: VerificationService;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let repository: Repository<LinkVerification>;
 
   const mockRepository = {

@@ -1,10 +1,5 @@
 import { Address } from '@algorandfoundation/algokit-utils';
-import {
-  DID_STATUS_DELETING,
-  DID_STATUS_READY,
-  DID_STATUS_UPLOADING,
-  deleteDIDDocument,
-} from './deleteDIDDocument';
+import { DID_STATUS_DELETING, DID_STATUS_READY, DID_STATUS_UPLOADING, deleteDIDDocument } from './deleteDIDDocument';
 import { MAX_TXNS_PER_GROUP } from './uploadDIDDocument';
 
 type RecordedCall = {
@@ -74,9 +69,7 @@ describe('did-algo/deleteDIDDocument', () => {
       lastDeleted: 0n,
       endSize: 0n,
     });
-    await expect(deleteDIDDocument(appClient, algorand, 1n, PUB_KEY, SENDER)).rejects.toThrow(
-      /Cannot delete DID/,
-    );
+    await expect(deleteDIDDocument(appClient, algorand, 1n, PUB_KEY, SENDER)).rejects.toThrow(/Cannot delete DID/);
   });
 
   it('READY: prepends startDelete then sequential deleteData over [start, end]', async () => {
