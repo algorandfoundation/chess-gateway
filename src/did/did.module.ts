@@ -5,6 +5,8 @@ import { ChainModule } from '../chain/chain.module';
 import { VaultModule } from '../vault/vault.module';
 import { VerificationModule } from '../link/verification/verification.module';
 import { DidRecord } from './entities/did-record.entity';
+import { Oid4vcUserDeviceManifest } from '../oid4vc/entities/oid4vc-user-device-manifest.entity';
+import { Oid4vcUserDeviceManifestRevision } from '../oid4vc/entities/oid4vc-user-device-manifest-revision.entity';
 import { DidService } from './did.service';
 import { DidController } from './did.controller';
 
@@ -17,7 +19,17 @@ import { DidController } from './did.controller';
  * trigger a DID publish whenever a new user is created.
  */
 @Module({
-  imports: [TypeOrmModule.forFeature([DidRecord]), ChainModule, VaultModule, VerificationModule, ConfigModule],
+  imports: [
+    TypeOrmModule.forFeature([
+      DidRecord,
+      Oid4vcUserDeviceManifest,
+      Oid4vcUserDeviceManifestRevision,
+    ]),
+    ChainModule,
+    VaultModule,
+    VerificationModule,
+    ConfigModule,
+  ],
   controllers: [DidController],
   providers: [DidService],
   exports: [DidService, TypeOrmModule],

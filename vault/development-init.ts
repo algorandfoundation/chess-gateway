@@ -15,7 +15,7 @@ import { buildVaultTransactionSigner } from '../src/did/vault-signer';
 import { updateEnvFile } from '../libs/env';
 
 // Constants
-const VAULT_BASE_URL = process.env.VAULT_BASE_URL || 'http://localhost:8200';
+const VAULT_BASE_URL = process.env.VAULT_BASE_URL || 'http://vault:8200';
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 const VAULT_INIT_ENDPOINT = '/v1/sys/init';
 const VAULT_UNSEAL_ENDPOINT = '/v1/sys/unseal';
@@ -31,6 +31,9 @@ const USERS_POLICY_NAME = 'pawn_users_policy';
 const USERS_APP_ROLE_NAME = 'pawn_users_approle';
 const MANAGERS_POLICY_NAME = 'pawn_managers_policy';
 const MANAGERS_APP_ROLE_NAME = 'pawn_managers_approle';
+const OID4VC_ISSUER_POLICY_NAME = 'pawn_oid4vc_issuer_policy';
+const OID4VC_ISSUER_APP_ROLE_NAME = 'pawn_oid4vc_issuer_approle';
+const OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE = 'oid4vc-role-and-secrets.json';
 
 // Function to initialize Vault
 async function initVault() {
@@ -178,27 +181,74 @@ async function createACLPolicies(token: string) {
         },
       },
     },
+    // OID4VC ISSUER
+    // -------------
+    // Dedicated AppRole used by the OID4VC subsystem (see
+    // `src/oid4vc/algo/algo-vault-token.provider.ts`). Scoped down from the
+    // manager policy so the OID4VC service can only:
+    //   - read user transit public keys (binding rehydration / DID
+    //     resolution),
+    //   - lazily create a user transit key when a `did:algo` is being
+    //     minted for a user that doesn't yet have one,
+    //   - sign with user transit keys (per-user credential signatures via
+    //     `VaultAskarWallet.sign`),
+    //   - sign with the manager transit key (so `DidService.publishUserDid`
+    //     can author the on-chain Algorand transaction that anchors the DID
+    //     document).
+    // It deliberately does NOT grant the broad `keys/*` capabilities the
+    // manager policy has on the managers transit path — only `sign/*` —
+    // because the OID4VC service must never rotate or destroy the manager
+    // key, only use it.
+    [OID4VC_ISSUER_POLICY_NAME]: {
+      path: {
+        // Manager: read pubkey + sign (no rotate/destroy). Reading the
+        // pubkey is required by `buildManagerSigner` (to derive the
+        // manager's Algorand address before submitting a DID-anchor txn)
+        // and by `AlgoDidRegistrar` when minting the issuer DID, which
+        // points the registrar at the managers path so the issuer DID
+        // reuses the manager's existing identity key instead of a fresh
+        // throwaway under the users path.
+        [`${VAULT_TRANSIT_MANAGERS_PATH}/keys/${VAULT_MANAGER_KEY}`]: {
+          capabilities: ['read'],
+        },
+        [`${VAULT_TRANSIT_MANAGERS_PATH}/sign/${VAULT_MANAGER_KEY}`]: {
+          capabilities: ['create', 'read', 'update'],
+        },
+        // Users: read pubkeys + lazy create + sign for credential issuance.
+        [`${VAULT_TRANSIT_USERS_PATH}/keys/*`]: {
+          capabilities: ['create', 'read', 'update'],
+        },
+        [`${VAULT_TRANSIT_USERS_PATH}/keys/+/+`]: {
+          capabilities: ['deny'],
+        },
+        [`${VAULT_TRANSIT_USERS_PATH}/sign/*`]: {
+          capabilities: ['create', 'read', 'update'],
+        },
+      },
+    },
   };
 
-  // Create the ACL policies
+  // Create or refresh the ACL policies. We always PUT (Vault treats this
+  // as upsert) so that existing dev environments pick up policy changes
+  // without needing a full vault reset.
   for (const [policyName, policy] of Object.entries(policies)) {
     const policyExists = await checkACLPoliciesExists(policyName, token);
-    if (!policyExists) {
-      await axios.put(
-        `${VAULT_BASE_URL}/v1/sys/policies/acl/${policyName}`,
-        {
-          policy: JSON.stringify(policy),
+    await axios.put(
+      `${VAULT_BASE_URL}/v1/sys/policies/acl/${policyName}`,
+      {
+        policy: JSON.stringify(policy),
+      },
+      {
+        headers: {
+          'X-Vault-Token': token,
         },
-        {
-          headers: {
-            'X-Vault-Token': token,
-          },
-        },
-      );
-      console.log(`ACL policy '${policyName}' created successfully`);
-    } else {
-      console.log(`PASS: ACL policy '${policyName}' already exists`);
-    }
+      },
+    );
+    console.log(
+      policyExists
+        ? `ACL policy '${policyName}' updated`
+        : `ACL policy '${policyName}' created`,
+    );
   }
 }
 
@@ -277,6 +327,10 @@ async function getOrCreateAppRoles(root_token: string) {
     {
       name: MANAGERS_APP_ROLE_NAME,
       policies: [MANAGERS_POLICY_NAME],
+    },
+    {
+      name: OID4VC_ISSUER_APP_ROLE_NAME,
+      policies: [OID4VC_ISSUER_POLICY_NAME],
     },
   ];
 
@@ -438,6 +492,24 @@ async function main() {
   await logRoleIdAndSecretId(USERS_APP_ROLE_NAME, sealKeys.root_token, USERS_ROLE_AND_SECRET_KEYS_FILE);
   console.log('\n\n\nMANAGER SECRETS\n-----');
   await logRoleIdAndSecretId(MANAGERS_APP_ROLE_NAME, sealKeys.root_token, MANAGERS_ROLE_AND_SECRET_KEYS_FILE);
+  console.log('\n\n\nOID4VC ISSUER SECRETS\n-----');
+  await logRoleIdAndSecretId(
+    OID4VC_ISSUER_APP_ROLE_NAME,
+    sealKeys.root_token,
+    OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE,
+  );
+  // Mirror the role/secret into the project `.env` so the Nest agent picks
+  // them up on the very next boot without an extra manual step.
+  try {
+    const oid4vcCreds = JSON.parse(fs.readFileSync(OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE).toString()) as {
+      role_id: string;
+      secret_id: string;
+    };
+    updateEnvFile('OID4VC_VAULT_ROLE_ID', oid4vcCreds.role_id);
+    updateEnvFile('OID4VC_VAULT_SECRET_ID', oid4vcCreds.secret_id);
+  } catch (err) {
+    console.warn(`Could not propagate OID4VC AppRole credentials to .env: ${(err as Error).message}`);
+  }
 
   console.log('\n\n\nMANAGER ALGORAND PUBLIC ADDRESS\n------');
   const managerPubKey = await getOrCreateManager(sealKeys.root_token);

@@ -30,22 +30,51 @@ describe('did-document', () => {
     expect(doc.alsoKnownAs).toEqual([`algorand:${wallet}`]);
   });
 
-  it('publishes the linked Algorand account as a second ed25519 verification method', () => {
+  it('does not promote the linked Algorand payment key to a verification method', () => {
+    // The linked algorand payment key is correlation metadata only —
+    // identity-purpose signatures (OID4VCI proofs, DID-Auth) bind to
+    // the wallet's primary identity key (`#keys-2`), not the on-chain
+    // payment account.
     const wallet = 'EKXHY5NSZLQAMWM5MVWSGRWQLIXXNVSZ6NFYIGEX2C2EBKIHFJO6NUFVSI';
     const doc = buildDidDocument({ did: DID, publicKey: PUB_KEY, linkedWalletAddress: wallet });
 
+    expect(doc.verificationMethod).toHaveLength(1);
+    expect(doc.verificationMethod[0].id).toBe(`${DID}#keys-1`);
+    expect(doc.authentication).toEqual([`${DID}#keys-1`]);
+    expect(doc.assertionMethod).toEqual([`${DID}#keys-1`]);
+  });
+
+  it('publishes the wallet identity public key as `#keys-2` when supplied', () => {
+    const identityKey = new Uint8Array(32).fill(0x77);
+    const doc = buildDidDocument({ did: DID, publicKey: PUB_KEY, identityPublicKey: identityKey });
+
     expect(doc.verificationMethod).toHaveLength(2);
-    const [primary, linked] = doc.verificationMethod;
+    const [primary, identity] = doc.verificationMethod;
     expect(primary.id).toBe(`${DID}#keys-1`);
-    expect(linked.id).toBe(`${DID}#keys-2`);
-    expect(linked.type).toBe('Ed25519VerificationKey2020');
-    expect(linked.controller).toBe(DID);
-    expect(linked.publicKeyMultibase.startsWith('z')).toBe(true);
-    // The linked key must differ from the user's vault key.
-    expect(linked.publicKeyMultibase).not.toBe(primary.publicKeyMultibase);
+    expect(identity.id).toBe(`${DID}#keys-2`);
+    expect(identity.type).toBe('Ed25519VerificationKey2020');
+    expect(identity.controller).toBe(DID);
+    expect(identity.publicKeyMultibase.startsWith('z')).toBe(true);
+    // The identity key must differ from the user's vault `#keys-1` key.
+    expect(identity.publicKeyMultibase).not.toBe(primary.publicKeyMultibase);
 
     expect(doc.authentication).toEqual([`${DID}#keys-1`, `${DID}#keys-2`]);
     expect(doc.assertionMethod).toEqual([`${DID}#keys-1`, `${DID}#keys-2`]);
+  });
+
+  it('combines identity key (`#keys-2`) with linked wallet (`alsoKnownAs`) without conflating them', () => {
+    const identityKey = new Uint8Array(32).fill(0x77);
+    const wallet = 'EKXHY5NSZLQAMWM5MVWSGRWQLIXXNVSZ6NFYIGEX2C2EBKIHFJO6NUFVSI';
+    const doc = buildDidDocument({
+      did: DID,
+      publicKey: PUB_KEY,
+      identityPublicKey: identityKey,
+      linkedWalletAddress: wallet,
+    });
+
+    expect(doc.verificationMethod).toHaveLength(2);
+    expect(doc.verificationMethod[1].id).toBe(`${DID}#keys-2`);
+    expect(doc.alsoKnownAs).toEqual([`algorand:${wallet}`]);
   });
 
   it('omits alsoKnownAs when linkedWalletAddress is null/empty', () => {

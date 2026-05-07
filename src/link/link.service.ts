@@ -5,6 +5,8 @@ import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { VaultService } from '../vault/vault.service';
 import { DidService } from '../did/did.service';
+import { DeviceManifestService } from '../oid4vc/devices/device-manifest.service';
+import type { UploadDeviceManifestDto } from '../oid4vc/dto/upload-device-manifest.dto';
 
 @Injectable()
 export class LinkService {
@@ -15,31 +17,113 @@ export class LinkService {
     private readonly configService: ConfigService,
     private readonly vaultService: VaultService,
     private readonly didService: DidService,
+    private readonly deviceManifestService: DeviceManifestService,
   ) {}
 
   /**
-   * Force-republish the player's DID document so its `alsoKnownAs`
-   * reflects the freshly linked wallet. Skips republish (with a log) if
-   * the player has no on-chain document yet — `publishUserDid` will
-   * pick up the linked wallet on the next regular publish.
+   * Best-effort seed of the wallet's did:key device manifest on the
+   * first attestation. Failures are logged but do not block the link
+   * flow (wallets that don't yet send a manifest must still be able
+   * to link). See `src/oid4vc/DISCOVERY.md` — "First-attestation
+   * seeding".
    */
-  private async republishDidWithLink(playerId: string): Promise<void> {
+  private async seedDeviceManifest(
+    userId: string,
+    manifest: UploadDeviceManifestDto,
+  ): Promise<void> {
+    try {
+      const result = await this.deviceManifestService.upsertManifest({
+        userId,
+        didKey: manifest.didKey,
+        version: manifest.version,
+        signedAt: manifest.signedAt,
+        didDocument: manifest.didDocument,
+        signature: manifest.signature,
+        // Link-attestation has just verified device integrity, so this
+        // is the one place we allow a previously-unseen did:key to
+        // create a manifest row.
+        trustedSeed: true,
+      });
+      this.logger.log(
+        `Seeded device manifest userId=${userId} didKey=${manifest.didKey} version=${manifest.version} created=${result.created}`,
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to seed device manifest userId=${userId} didKey=${manifest?.didKey}: ${error?.message}`,
+      );
+    }
+  }
+
+  /**
+   * Ensure the player has an on-chain DID document that reflects the
+   * freshly linked wallet under `alsoKnownAs`.
+   *
+   * - If the player already has a document, force-republish it so the
+   *   linked wallet shows up.
+   * - If the player has *no* on-chain document yet (e.g. they registered
+   *   but the manager hadn't provisioned one yet), provision it now —
+   *   linking is exactly the moment we want the on-chain identity to
+   *   exist.
+   *
+   * `publishUserDid` itself serialises concurrent invocations per user,
+   * so a wallet that retries the link request will not race itself into
+   * a "transaction already in ledger" error.
+   */
+  private async republishDidWithLink(
+    playerId: string,
+    identityPublicKey?: Uint8Array | null,
+  ): Promise<void> {
     const roleId = this.configService.get<string>('VAULT_ROLE_ID');
     const secretId = this.configService.get<string>('VAULT_SECRET_ID');
     const token = await this.vaultService.getTokenWithRole(roleId, secretId);
     const publicKey = await this.vaultService.getUserPublicKey(playerId, token);
     const hasDoc = await this.didService.hasOnChainDocument(new Uint8Array(publicKey));
-    if (!hasDoc) {
-      this.logger.log(`No on-chain DID document for player ${playerId}; skipping link republish.`);
-      return;
-    }
     await this.didService.publishUserDid({
       userId: playerId,
       publicKey: new Uint8Array(publicKey),
       vaultToken: token,
-      force: true,
+      // Republish if a doc already exists; provision it for first-time
+      // linkers who have no on-chain document yet.
+      force: hasDoc,
+      // The wallet's primary device-held identity key, surfaced as
+      // `#keys-2`. Passed explicitly so we don't need to depend on the
+      // device-manifest table being keyed by the same id (it's keyed
+      // by Better-Auth `userId`, whereas the DID is keyed by the vault
+      // player id).
+      identityPublicKey: identityPublicKey ?? null,
     });
-    this.logger.log(`Republished DID document for player ${playerId} with linked wallet.`);
+    this.logger.log(
+      hasDoc
+        ? `Republished DID document for player ${playerId} with linked wallet.`
+        : `Provisioned DID document for player ${playerId} on first link.`,
+    );
+  }
+
+  /**
+   * Extract the wallet's primary device-held ed25519 identity public
+   * key from the supplied manifest payload. Returns `null` when the
+   * manifest is absent or malformed (callers fall back to a
+   * `#keys-1`-only DID document, which is the legacy behaviour).
+   *
+   * The extraction reuses {@link DeviceManifestService.extractPrimaryEd25519Key}
+   * so the validation rules (multibase decoding, multicodec prefix,
+   * key-length, primary-VM identification) stay in lockstep with the
+   * manifest persistence path.
+   */
+  private extractIdentityPublicKey(
+    manifest?: UploadDeviceManifestDto,
+  ): Uint8Array | null {
+    if (!manifest) return null;
+    try {
+      return new Uint8Array(
+        this.deviceManifestService.extractPrimaryEd25519Key(manifest.didKey, manifest.didDocument),
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `Could not extract identity public key from device manifest: ${error?.message}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -56,6 +140,7 @@ export class LinkService {
     walletAddress: string,
     integrityData: { integrityToken?: string; attestationObject?: string; keyId?: string },
     challenge: string,
+    deviceManifest?: UploadDeviceManifestDto,
   ): Promise<LinkVerification> {
     const isIntegrityVerified = await this.verifyIntegrity(challenge, integrityData);
     if (!isIntegrityVerified) {
@@ -68,10 +153,28 @@ export class LinkService {
     }
 
     const verification = await this.verificationService.upsert(userId, id, true, walletAddress);
+
+    // Pull the wallet's primary device-held identity ed25519 public
+    // key out of the supplied manifest before publishing the DID
+    // document — that's the key we'll surface as `#keys-2`. The
+    // algorand wallet address is correlation metadata only and stays
+    // in `alsoKnownAs`; it is no longer used as a verification method.
+    const identityPublicKey = this.extractIdentityPublicKey(deviceManifest);
+
     // Republish the DID document so the linked wallet shows up under
-    // `alsoKnownAs`. Failures propagate so callers see link/DID drift
-    // immediately instead of silently.
-    await this.republishDidWithLink(id);
+    // `alsoKnownAs` and `#keys-2` reflects the device-held identity.
+    // Failures propagate so callers see link/DID drift immediately
+    // instead of silently.
+    await this.republishDidWithLink(id, identityPublicKey);
+
+    // Best-effort: seed the wallet's did:key device manifest if the
+    // wallet supplied one. The manifest is keyed against the
+    // authenticated `userId` (Better Auth), not the vault player id —
+    // it represents the device, not the on-chain identity.
+    if (deviceManifest) {
+      await this.seedDeviceManifest(userId, deviceManifest);
+    }
+
     return verification;
   }
 

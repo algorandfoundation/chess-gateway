@@ -68,7 +68,7 @@ export class LinkController {
       throw new BadRequestException('Email must be verified to link device and wallet.');
     }
 
-    const { walletAddress, ...integrityData } = body;
+    const { walletAddress, deviceManifest, ...integrityData } = body;
     const challenge = session.session.challenge;
 
     if (!challenge) {
@@ -86,7 +86,14 @@ export class LinkController {
 
     const email = session.user.email;
 
-    return this.linkService.linkResponse(session.user.id, email, walletAddress, integrityData, challenge);
+    return this.linkService.linkResponse(
+      session.user.id,
+      email,
+      walletAddress,
+      integrityData,
+      challenge,
+      deviceManifest,
+    );
   }
 
   /**

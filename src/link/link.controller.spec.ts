@@ -113,6 +113,7 @@ describe('LinkController', () => {
           integrityToken: 'token',
         },
         'challenge123',
+        undefined,
       );
     });
 
@@ -195,6 +196,7 @@ describe('LinkController', () => {
         '0xWallet',
         { integrityToken: 'token' },
         'e2e-challenge',
+        undefined,
       );
     });
   });

@@ -28,5 +28,9 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
       useClass: AuthGuard,
     },
   ],
+  // Export AuthService so other modules (e.g. Oid4vcModule) can resolve
+  // the email → vault player id mapping that backs on-chain DID
+  // ownership without re-implementing the lookup.
+  exports: [AuthService],
 })
 export class AuthModule {}

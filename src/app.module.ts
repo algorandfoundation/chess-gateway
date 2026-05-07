@@ -7,6 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { LinkModule } from './link/link.module';
 import { DidModule } from './did/did.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { Oid4vcModule } from './oid4vc/oid4vc.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
     VaultModule,
     ChainModule,
     DidModule,
+    Oid4vcModule,
   ],
   controllers: [],
   providers: [],

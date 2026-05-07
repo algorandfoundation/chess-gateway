@@ -55,6 +55,7 @@ describe('DidService', () => {
   };
 
   let didRepo: RepoMock<DidRecord>;
+  let manifestRepo: RepoMock<unknown>;
   let configService: jest.Mocked<ConfigService>;
   let chainService: jest.Mocked<ChainService>;
   let vaultService: jest.Mocked<VaultService>;
@@ -105,8 +106,12 @@ describe('DidService', () => {
     uploadDIDDocumentMock.mockResolvedValue(['tx-upload-1']);
     deleteDIDDocumentMock.mockResolvedValue(['tx-del-1']);
 
+    manifestRepo = buildRepoMock<unknown>();
+    manifestRepo.findOne.mockResolvedValue(null);
+
     didService = new DidService(
       didRepo as unknown as Repository<DidRecord>,
+      manifestRepo as unknown as Repository<any>,
       configService,
       chainService,
       vaultService,
@@ -249,6 +254,24 @@ describe('DidService', () => {
         /chain refused/,
       );
       expect(didRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('coalesces concurrent publishes for the same user into a single on-chain run', async () => {
+      // Only one fresh-publish path: metadata.value is consulted exactly
+      // once because the second concurrent caller is supposed to await
+      // the in-flight promise rather than start its own flow.
+      metadataValueMock.mockResolvedValueOnce(undefined);
+
+      const [a, b] = await Promise.all([
+        didService.publishUserDid({ userId: 'jim', publicKey: PUB_KEY, vaultToken: 'vt' }),
+        didService.publishUserDid({ userId: 'jim', publicKey: PUB_KEY, vaultToken: 'vt' }),
+      ]);
+
+      expect(uploadDIDDocumentMock).toHaveBeenCalledTimes(1);
+      expect(deleteDIDDocumentMock).not.toHaveBeenCalled();
+      // Both callers see the exact same result object — they share the
+      // in-flight promise.
+      expect(a).toBe(b);
     });
   });
 

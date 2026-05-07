@@ -6,11 +6,38 @@ import 'source-map-support/register';
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { ExceptionsFilter } from './exception.filter';
 import { LoggingInterceptor } from './logging.interceptor';
+import { Oid4vcAgentProvider } from './oid4vc/agent/oid4vc-agent.provider';
+import { Oid4vcConfig } from './oid4vc/oid4vc.config';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     logger: ['log', 'error', 'warn', 'debug', 'verbose'],
   });
+
+  // Mount the Credo OID4VCI/OID4VP Express routers *before* `setGlobalPrefix`
+  // so wallets reach the protocol endpoints at the absolute URLs declared in
+  // the issuer/verifier metadata (i.e. without the `/v1` Nest prefix).
+  const oid4vcAgent = app.get(Oid4vcAgentProvider);
+  const oid4vcConfig = app.get(Oid4vcConfig);
+  // Credo's openid4vc routers register a post-handler middleware that calls
+  // `next()` after the response has been sent (for `agentContext.endSession()`
+  // cleanup). If we mount the router directly, that `next()` propagates back
+  // into Express's parent stack and re-enters Nest's middleware (CORS delegate,
+  // 404 fallback, exception filter) which all try to setHeader on a finalized
+  // response and crash with "Cannot set headers after they are sent". Wrapping
+  // the router so it swallows `next()` once headers are sent keeps the cleanup
+  // intact while terminating the request at the credo boundary.
+  const terminating = (router: typeof oid4vcAgent.issuerRouter) => {
+    return (req: any, res: any, next: any) => {
+      router(req, res, (err: unknown) => {
+        if (err) return next(err);
+        if (res.headersSent || res.writableEnded) return;
+        next();
+      });
+    };
+  };
+  app.use(oid4vcConfig.issuerPath, terminating(oid4vcAgent.issuerRouter));
+  app.use(oid4vcConfig.verifierPath, terminating(oid4vcAgent.verifierRouter));
 
   app.useGlobalFilters(new ExceptionsFilter());
   app.useGlobalInterceptors(new LoggingInterceptor());

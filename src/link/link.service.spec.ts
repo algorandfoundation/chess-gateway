@@ -6,6 +6,7 @@ import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { DidService } from '../did/did.service';
+import { DeviceManifestService } from '../oid4vc/devices/device-manifest.service';
 
 describe('LinkService', () => {
   let service: LinkService;
@@ -42,6 +43,12 @@ describe('LinkService', () => {
     getUserIdByEmail: jest.fn(),
   };
 
+  const mockDeviceManifestService = {
+    upsertManifest: jest.fn(),
+    getCurrentByUser: jest.fn(),
+    revoke: jest.fn(),
+  };
+
   const mockConfigService = {
     get: jest.fn(),
   };
@@ -69,6 +76,10 @@ describe('LinkService', () => {
         {
           provide: DidService,
           useValue: mockDidService,
+        },
+        {
+          provide: DeviceManifestService,
+          useValue: mockDeviceManifestService,
         },
       ],
     }).compile();
@@ -110,6 +121,49 @@ describe('LinkService', () => {
       expect(result.walletAddress).toBe('0xWallet');
       expect(mockAuthService.getUserIdByEmail).toHaveBeenCalledWith('test@example.com');
       expect(verificationService.upsert).toHaveBeenCalledWith('user123', 'player123', true, '0xWallet');
+    });
+
+    it('provisions an on-chain DID document when the player has none yet', async () => {
+      mockAuthService.getUserIdByEmail.mockResolvedValue('player123');
+      mockVerificationService.upsert.mockResolvedValue({ id: 'player123', walletAddress: '0xWallet' });
+      mockVaultService.getTokenWithRole.mockResolvedValue('manager-token');
+      mockVaultService.getUserPublicKey.mockResolvedValue(Buffer.alloc(32));
+      mockDidService.hasOnChainDocument.mockResolvedValue(false);
+      mockDidService.publishUserDid.mockResolvedValue({ did: 'did:algo:test', document: {}, txIds: ['t1'] });
+
+      await service.linkResponse(
+        'user123',
+        'test@example.com',
+        '0xWallet',
+        { integrityToken: 'valid-token' },
+        'challenge123',
+      );
+
+      // Provision = publish without `force` (force is only for the
+      // republish-on-existing-doc path).
+      expect(mockDidService.publishUserDid).toHaveBeenCalledTimes(1);
+      const [args] = mockDidService.publishUserDid.mock.calls[0];
+      expect(args).toMatchObject({ userId: 'player123', vaultToken: 'manager-token', force: false });
+    });
+
+    it('force-republishes when the player already has an on-chain DID document', async () => {
+      mockAuthService.getUserIdByEmail.mockResolvedValue('player123');
+      mockVerificationService.upsert.mockResolvedValue({ id: 'player123', walletAddress: '0xWallet' });
+      mockVaultService.getTokenWithRole.mockResolvedValue('manager-token');
+      mockVaultService.getUserPublicKey.mockResolvedValue(Buffer.alloc(32));
+      mockDidService.hasOnChainDocument.mockResolvedValue(true);
+      mockDidService.publishUserDid.mockResolvedValue({ did: 'did:algo:test', document: {}, txIds: ['t1'] });
+
+      await service.linkResponse(
+        'user123',
+        'test@example.com',
+        '0xWallet',
+        { integrityToken: 'valid-token' },
+        'challenge123',
+      );
+
+      const [args] = mockDidService.publishUserDid.mock.calls[0];
+      expect(args).toMatchObject({ userId: 'player123', force: true });
     });
 
     it('should throw BadRequestException if integrity verification fails', async () => {

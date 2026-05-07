@@ -12,6 +12,7 @@ vault-seal-keys.json
 .log/
 coverage/
 manager-role-and-secrets.json
+oid4vc-role-and-secrets.json
 user-role-and-secrets.json
 prompt
 *.tgz
