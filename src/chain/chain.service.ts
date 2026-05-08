@@ -83,10 +83,10 @@ export class ChainService {
       unitName: options.unitName,
       assetName: options.assetName,
       url: options.url,
-      manager: Address.fromString(options.managerAddress),
-      reserve: Address.fromString(options.reserveAddress),
-      freeze: Address.fromString(options.freezeAddress),
-      clawback: Address.fromString(options.clawbackAddress),
+      ...(options.managerAddress ? { manager: Address.fromString(options.managerAddress) } : {}),
+      ...(options.reserveAddress ? { reserve: Address.fromString(options.reserveAddress) } : {}),
+      ...(options.freezeAddress ? { freeze: Address.fromString(options.freezeAddress) } : {}),
+      ...(options.clawbackAddress ? { clawback: Address.fromString(options.clawbackAddress) } : {}),
     };
 
     const txnParams: TransactionParams = {
