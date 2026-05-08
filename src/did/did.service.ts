@@ -239,6 +239,7 @@ export class DidService {
    * the canonical source of truth in that case).
    */
   async resolveLocal(userId: string): Promise<DidRecord | null> {
+    userId = await this.verificationService.resolveVaultUserId(userId);
     return this.didRepository.findOne({ where: { user_id: userId } });
   }
 
@@ -296,6 +297,7 @@ export class DidService {
    * if no on-chain document existed (the local cache is still cleared).
    */
   async deleteUserDid(userId: string, vaultToken: string): Promise<{ txIds: string[] | null; cacheRemoved: boolean }> {
+    userId = await this.verificationService.resolveVaultUserId(userId);
     const publicKey: Buffer = await this.vaultService.getUserPublicKey(userId, vaultToken);
     const publicKeyBytes = new Uint8Array(publicKey);
 
@@ -346,6 +348,7 @@ export class DidService {
       manifestAnchor?: ManifestAnchor;
     } = {},
   ): Promise<PublishedDidInfo> {
+    userId = await this.verificationService.resolveVaultUserId(userId);
     const publicKey: Buffer = await this.vaultService.getUserPublicKey(userId, vaultToken);
     return this.publishUserDid({
       userId,

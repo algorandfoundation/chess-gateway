@@ -36,6 +36,26 @@ export class VerificationService {
   }
 
   /**
+   * Resolve a public-facing user identifier to the canonical vault user id.
+   *
+   * Wallet/DID URL params (`/wallet/assets/:user_id`, `/did/users/:user_id`,
+   * …) accept either:
+   *  - the **vault user id** (used as the transit key name in Vault), or
+   *  - the **Better-Auth user id** (carried in JWTs after a UI sign-in).
+   *
+   * When a `LinkVerification` row maps the supplied Better-Auth `userId` to
+   * a vault `id`, we return that vault id; otherwise we treat the input as
+   * already being a vault id and return it unchanged. This keeps every
+   * downstream Vault/Chain lookup keyed by the vault id while letting the
+   * UI pass whichever identifier it has.
+   */
+  async resolveVaultUserId(idOrAuthUserId: string): Promise<string> {
+    if (!idOrAuthUserId) return idOrAuthUserId;
+    const verification = await this.findByUserId(idOrAuthUserId);
+    return verification?.id ?? idOrAuthUserId;
+  }
+
+  /**
    * Retrieves all link verifications for a specific vault player ID.
    */
   async findByPlayerId(id: string): Promise<LinkVerification[]> {

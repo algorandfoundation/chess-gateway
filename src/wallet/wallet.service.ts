@@ -40,6 +40,9 @@ export class WalletService {
   }
 
   async getUserInfo(user_id: string, vault_token: string): Promise<UserInfoResponseDto> {
+    // Accept either the vault user id or the Better-Auth user id; resolve
+    // to the canonical vault id before any Vault / DID / verification lookups.
+    user_id = await this.verificationService.resolveVaultUserId(user_id);
     const public_address = await this.vaultService.getUserPublicKey(user_id, vault_token);
 
     // get algo balance
@@ -152,6 +155,7 @@ export class WalletService {
     tx: Uint8Array<ArrayBufferLike>,
     vault_token: string,
   ): Promise<Uint8Array<ArrayBufferLike>> {
+    user_id = await this.verificationService.resolveVaultUserId(user_id);
     const vaultRawSig: Buffer = await this.vaultService.signAsUser(user_id, tx, vault_token);
     // split vault specific prefixes vault:${version}:signature
     const signature = vaultRawSig.toString().split(':')[2];
