@@ -218,7 +218,7 @@ describe('LinkService', () => {
       const result = await service.associateAccount('user1', 'new');
 
       expect(result.id).toBe('new');
-      expect(verificationService.upsert).toHaveBeenCalledWith('user1', 'new', true);
+      expect(verificationService.upsert).toHaveBeenCalledWith('user1', 'new', false);
     });
   });
 

@@ -2,12 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { VaultService } from '../vault/vault.service';
 import { JwtService } from '@nestjs/jwt';
 import { SignInResponseDto } from './sign-in.dto';
+import { auth } from '../link/auth';
+import { VerificationService } from '../link/verification/verification.service';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly vaultService: VaultService,
     private jwtService: JwtService,
+    private readonly verificationService: VerificationService,
   ) {}
 
   /**
@@ -40,21 +43,41 @@ export class AuthService {
     return vault_token;
   }
 
+  /**
+   * Reverse-lookup the email of a vault user id. Walks the
+   * `LinkVerification` rows (which carry the Better-Auth `userId`)
+   * and resolves the email via the Better-Auth adapter. Returns
+   * `null` when no mapping exists yet.
+   */
   async getUserEmail(userId: string): Promise<string | null> {
-    const mockEmails: Record<string, string> = {
-      alice: 'alice@example.com',
-      bob: 'bob@example.com',
-      charlie: 'charlie@example.com',
-    };
-    return mockEmails[userId] || null;
+    const matches = await this.verificationService.findByPlayerId(userId);
+    if (!matches?.length) return null;
+    const ctx: any = await (auth as any).$context;
+    const adapter = ctx.adapter;
+    const beUser = await adapter.findOne({
+      model: 'user',
+      where: [{ field: 'id', value: matches[0].userId }],
+    });
+    return beUser?.email ?? null;
   }
 
+  /**
+   * Resolve an email to its vault player id by going through
+   * Better-Auth → `LinkVerification`. The mapping is created when a
+   * manager calls `POST /auth/user` (or amends one via
+   * `PUT /auth/user/:userId`), so unknown emails return `null` and
+   * callers must instruct the manager to create the user first.
+   */
   async getUserIdByEmail(email: string): Promise<string | null> {
-    const mockEmails: Record<string, string> = {
-      'alice@example.com': 'alice',
-      'bob@example.com': 'bob',
-      'charlie@example.com': 'charlie',
-    };
-    return mockEmails[email.toLowerCase()] || null;
+    if (!email) return null;
+    const ctx: any = await (auth as any).$context;
+    const adapter = ctx.adapter;
+    const beUser = await adapter.findOne({
+      model: 'user',
+      where: [{ field: 'email', value: email }],
+    });
+    if (!beUser?.id) return null;
+    const verification = await this.verificationService.findByUserId(beUser.id);
+    return verification?.id ?? null;
   }
 }

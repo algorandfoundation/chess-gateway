@@ -225,12 +225,17 @@ export class LinkService {
 
   /**
    * Creates or updates a mapping between an authentication user and a vault player.
+   *
+   * Pre-attestation flow: the row is written with `isVerified=false`.
+   * Verification is only granted by `linkResponse` once the device +
+   * did:key manifest attestation succeeds.
+   *
    * @param userId The ID of the authenticated user.
    * @param id The ID of the player in the vault.
    * @returns The updated or newly created LinkVerification.
    */
   async associateAccount(userId: string, id: string): Promise<LinkVerification> {
-    return this.verificationService.upsert(userId, id, true);
+    return this.verificationService.upsert(userId, id, false);
   }
 
   /**

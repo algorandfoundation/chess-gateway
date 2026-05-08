@@ -12,5 +12,6 @@ import { VerificationModule } from '../link/verification/verification.module';
   imports: [HttpModule, VaultModule, ChainModule, ConfigModule, DidModule, VerificationModule],
   controllers: [Wallet],
   providers: [WalletService],
+  exports: [WalletService],
 })
 export class WalletModule {}

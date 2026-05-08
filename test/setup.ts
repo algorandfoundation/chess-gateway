@@ -30,13 +30,9 @@ jest.mock(
   }),
   { virtual: true },
 );
-jest.mock('better-auth/plugins', () => ({ emailOTP: () => ({}), openAPI: () => ({}) }), { virtual: true });
-jest.mock('@better-auth/kysely-adapter', () => ({ kyselyAdapter: () => () => ({}) }), { virtual: true });
 jest.mock(
-  'kysely',
-  () => ({
-    Kysely: class {},
-    SqliteDialect: class {},
-  }),
+  'better-auth/plugins',
+  () => ({ emailOTP: () => ({}), openAPI: () => ({}), admin: () => ({}) }),
   { virtual: true },
 );
+jest.mock('better-sqlite3', () => class {}, { virtual: true });

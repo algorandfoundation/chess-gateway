@@ -71,13 +71,23 @@ export class VerificationService {
 
   /**
    * Upserts a link verification for a user.
+   *
+   * `isVerified` defaults to `false` — verification is only granted
+   * after a successful device + did:key manifest attestation
+   * (`LinkService.linkResponse`). All other call sites (the
+   * Better-Auth user-create hook, manager-driven provisioning,
+   * pre-attestation auto-association, …) should leave it `false`.
    */
-  async upsert(userId: string, id: string, isVerified = true, walletAddress?: string): Promise<LinkVerification> {
+  async upsert(userId: string, id: string, isVerified = false, walletAddress?: string): Promise<LinkVerification> {
     let verification = await this.findByUserId(userId);
 
     if (verification) {
       verification.id = id;
       verification.associatedAt = new Date();
+      // Honour the supplied flag explicitly: pre-attestation flows
+      // (hook / manager provisioning) keep it `false`, the device +
+      // manifest attestation flow flips it to `true`.
+      verification.isVerified = isVerified;
     } else {
       verification = this.linkVerificationRepository.create({
         userId,

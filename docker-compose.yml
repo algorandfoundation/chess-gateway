@@ -1,5 +1,4 @@
 services:
-
   vault:
     image: hashicorp/vault:1.15.6
     container_name: vault
