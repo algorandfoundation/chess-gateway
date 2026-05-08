@@ -111,15 +111,56 @@ export class HealthService {
 
   private async probeAlgod(): Promise<HealthServiceProbeDto> {
     const scheme = this.configService.get<string>('NODE_HTTP_SCHEME') || 'http';
-    const host = this.configService.get<string>('NODE_HOST') || '';
-    const url = `${scheme}://${host}/health`;
+    const host = this.configService.get<string>('NODE_HOST') || 'localhost';
+    const port = this.configService.get<string>('NODE_PORT') || '';
+    const token = this.configService.get<string>('NODE_TOKEN') || '';
+    const authority = port ? `${host}:${port}` : host;
+    const url = `${scheme}://${authority}/versions`;
     return this.timed('algod', url, async () => {
       const res = await this.httpService.axiosRef.get(url, {
         validateStatus: () => true,
         timeout: 5000,
+        headers: token ? { 'X-Algo-API-Token': token } : undefined,
       });
-      // algod /health returns 200 with empty body when healthy.
-      return { ok: res.status === 200, status: res.status, statusText: res.statusText };
+      // algod /versions returns 200 with a JSON body describing the node
+      // build, genesis, and supported API versions — strictly more useful
+      // than /health (which is just an empty 200) for the debug page.
+      const body = (res.data ?? {}) as {
+        build?: {
+          major?: number;
+          minor?: number;
+          build_number?: number;
+          channel?: string;
+          branch?: string;
+          commit_hash?: string;
+        };
+        genesis_id?: string;
+        genesis_hash_b64?: string;
+        versions?: string[];
+      };
+      const build = body.build ?? {};
+      const version =
+        typeof build.major === 'number' && typeof build.minor === 'number'
+          ? `${build.major}.${build.minor}.${build.build_number ?? 0}`
+          : undefined;
+      return {
+        ok: res.status === 200,
+        status: res.status,
+        statusText: res.statusText,
+        details: {
+          host,
+          port: port || null,
+          scheme,
+          tokenConfigured: Boolean(token),
+          version,
+          channel: build.channel,
+          branch: build.branch,
+          commitHash: build.commit_hash,
+          genesisId: body.genesis_id,
+          genesisHash: body.genesis_hash_b64,
+          versions: body.versions,
+        },
+      };
     });
   }
 
