@@ -16,6 +16,7 @@ import { Oid4vcUserDeviceManifestRevision } from './entities/oid4vc-user-device-
 import { DidModule } from '../did/did.module';
 import { VaultModule } from '../vault/vault.module';
 import { AuthModule } from '../auth/auth.module';
+import { VerificationModule } from '../link/verification/verification.module';
 import { AlgoVaultTokenProvider } from './algo/algo-vault-token.provider';
 import { DeviceManifestService } from './devices/device-manifest.service';
 import { DeviceManifestController } from './devices/device-manifest.controller';
@@ -60,6 +61,10 @@ import { DeviceManifestAdminController } from './devices/device-manifest-admin.c
     // Better-Auth session (`session.user.email`) to the vault player id
     // under which the on-chain DID is keyed.
     AuthModule,
+    // VerificationModule exports VerificationService so the admin
+    // manifest controller can resolve either a Better-Auth user id or
+    // a vault user id when looking up manifests/DID records.
+    VerificationModule,
   ],
   controllers: [
     Oid4vcIssuerController,

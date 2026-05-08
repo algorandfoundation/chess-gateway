@@ -56,6 +56,29 @@ export class VerificationService {
   }
 
   /**
+   * Reverse of {@link resolveVaultUserId}. Given either:
+   *  - a Better-Auth user id, or
+   *  - a vault user id (e.g. `alice`)
+   *
+   * return the **Better-Auth** user id linked to it (the manifest table is
+   * keyed by Better-Auth `userId`), falling back to the input when no row
+   * matches in either direction. Used by the admin manifest endpoint so
+   * callers can pass whichever id the UI happens to have.
+   */
+  async resolveAuthUserId(idOrAuthUserId: string): Promise<string> {
+    if (!idOrAuthUserId) return idOrAuthUserId;
+    // First, treat input as a BA userId — if a row exists keyed by it,
+    // it's already the right id.
+    const byUser = await this.findByUserId(idOrAuthUserId);
+    if (byUser) return byUser.userId;
+    // Otherwise, treat it as a vault id and look for any row whose
+    // `id` matches; return the first associated `userId`.
+    const byPlayer = await this.findByPlayerId(idOrAuthUserId);
+    if (byPlayer.length > 0 && byPlayer[0].userId) return byPlayer[0].userId;
+    return idOrAuthUserId;
+  }
+
+  /**
    * Retrieves all link verifications for a specific vault player ID.
    */
   async findByPlayerId(id: string): Promise<LinkVerification[]> {
