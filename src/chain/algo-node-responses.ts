@@ -39,4 +39,22 @@ export interface AssetHolding {
   amount: bigint;
   'asset-id': number;
   'is-frozen': boolean;
+  // Optional asset metadata, populated by WalletService when available.
+  name?: string;
+  'unit-name'?: string;
+  decimals?: number;
+  total?: string;
+}
+
+// Subset of the algod GET /v2/assets/{asset-id} response we care about.
+export interface AssetInfoResponse {
+  index: number;
+  params: {
+    name?: string;
+    'unit-name'?: string;
+    decimals?: number;
+    total?: number | string;
+    creator?: string;
+    url?: string;
+  };
 }

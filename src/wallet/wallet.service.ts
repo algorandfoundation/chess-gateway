@@ -77,8 +77,47 @@ export class WalletService {
 
     return plainToClass(ManagerDetailDto, {
       public_address: new Address(public_address).toString(),
-      assets: account,
+      assets: await this.enrichHoldings(account),
       algoBalance: algoBalance.toString(),
+    });
+  }
+
+  /**
+   * Enrich raw account asset holdings with on-chain ASA params (name, unit-name,
+   * decimals, total) so UIs can render meaningful labels next to balances.
+   * Failures for individual assets degrade gracefully: the holding is returned
+   * unchanged.
+   */
+  private async enrichHoldings(holdings: AssetHolding[]): Promise<AssetHolding[]> {
+    if (!holdings || holdings.length === 0) return holdings ?? [];
+    const uniqueIds = Array.from(new Set(holdings.map((h) => h['asset-id'])));
+    const infoMap = new Map<number, AssetHolding>();
+    await Promise.all(
+      uniqueIds.map(async (id) => {
+        const info = await this.chainService.getAssetInfo(id);
+        if (info?.params) {
+          infoMap.set(id, {
+            'asset-id': id,
+            amount: 0n,
+            'is-frozen': false,
+            name: info.params.name,
+            'unit-name': info.params['unit-name'],
+            decimals: info.params.decimals,
+            total: info.params.total !== undefined ? String(info.params.total) : undefined,
+          });
+        }
+      }),
+    );
+    return holdings.map((h) => {
+      const meta = infoMap.get(h['asset-id']);
+      if (!meta) return h;
+      return {
+        ...h,
+        name: meta.name,
+        'unit-name': meta['unit-name'],
+        decimals: meta.decimals,
+        total: meta.total,
+      };
     });
   }
 
@@ -139,7 +178,7 @@ export class WalletService {
     Logger.debug(`Fetching asset balance for user: ${user_id} with address: ${userPublicAddress}`);
 
     const account: AssetHolding[] = await this.chainService.getAccountAssetHoldings(userPublicAddress);
-    return account;
+    return this.enrichHoldings(account);
   }
 
   /**

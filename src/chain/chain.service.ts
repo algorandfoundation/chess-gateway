@@ -7,6 +7,7 @@ import { safeStringify } from '../util';
 import {
   AccountAssetsResponse,
   AssetHolding,
+  AssetInfoResponse,
   TruncatedAccountAssetResponse,
   TruncatedAccountResponse,
   TruncatedAssetHolding,
@@ -347,6 +348,24 @@ export class ChainService {
         throw error;
       }
       throw error;
+    }
+  }
+
+  /**
+   * Fetch on-chain parameters for an Algorand Standard Asset (ASA).
+   *
+   * @param asset_id - Numeric ASA id.
+   * @returns - The asset's params (name, unit-name, decimals, total) or null when not found.
+   */
+  async getAssetInfo(asset_id: number | bigint): Promise<AssetInfoResponse | null> {
+    try {
+      const response = await this.makeAlgoNodeRequest(`v2/assets/${asset_id}`, 'GET');
+      return response as AssetInfoResponse;
+    } catch (error) {
+      const status = error?.response?.statusCode ?? error?.response?.status;
+      if (status === 404) return null;
+      Logger.warn(`Failed to fetch asset info for ${asset_id}: ${error?.message ?? error}`);
+      return null;
     }
   }
 
