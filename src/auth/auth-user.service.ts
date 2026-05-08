@@ -9,11 +9,13 @@ import { auth } from '../link/auth';
 import { VerificationService } from '../link/verification/verification.service';
 import { WalletService } from '../wallet/wallet.service';
 import {
+  AuthUserDetailDto,
   AuthUserResponseDto,
   AuthUserRole,
   CreateAuthUserDto,
   UpdateAuthUserDto,
 } from './auth-user.dto';
+import { LinkVerification } from '../link/verification/entities/link-verification.entity';
 
 /**
  * Server-side provisioning of Intermezzo Better-Auth users.
@@ -45,6 +47,96 @@ export class AuthUserService {
     private readonly walletService: WalletService,
     private readonly verificationService: VerificationService,
   ) {}
+
+  /**
+   * Lists every Better-Auth user with the data the manager UI needs
+   * to render them: email, name, role, vault binding (if any) and the
+   * Algorand `public_address` derived from the vault transit key. The
+   * vault list is queried with the caller's manager-scoped JWT vault
+   * token, same as `GET /v1/wallet/users/`.
+   */
+  async listUsers(vaultToken: string): Promise<AuthUserDetailDto[]> {
+    const ctx: any = await (auth as any).$context;
+    const adapter = ctx.adapter;
+    const beUsers: any[] = await adapter.findMany({ model: 'user' });
+
+    const verifications = await this.verificationService.findAll();
+    const verificationByUserId = new Map<string, LinkVerification>(
+      verifications.map((v) => [v.userId, v]),
+    );
+
+    let publicAddressByVaultId = new Map<string, string>();
+    try {
+      const keys = await this.walletService.getKeys(vaultToken);
+      publicAddressByVaultId = new Map(
+        keys.map((k) => [k.user_id, k.public_address]),
+      );
+    } catch (err: any) {
+      this.logger.warn(
+        `listUsers: could not fetch vault keys (${err?.message ?? err}); public addresses will be omitted`,
+      );
+    }
+
+    return beUsers.map((u) => {
+      const v = verificationByUserId.get(u.id);
+      const vaultUserId = v?.id ?? this.deriveVaultUserId(u.email, u.id);
+      return {
+        userId: u.id,
+        email: u.email,
+        name: u.name,
+        role: (u.role as AuthUserRole) ?? 'user',
+        vaultUserId,
+        publicAddress: publicAddressByVaultId.get(vaultUserId) ?? null,
+        isVerified: v?.isVerified ?? false,
+        walletAddress: v?.walletAddress ?? null,
+        associatedAt: v?.associatedAt ? new Date(v.associatedAt).toISOString() : null,
+      };
+    });
+  }
+
+  /**
+   * Returns the enriched detail view of a single Better-Auth user
+   * (better-auth profile, role, vault binding, public address, and
+   * verification status). The current device manifest / DID Document
+   * is exposed by a separate admin endpoint on the OID4VC module to
+   * keep this service free of cross-module dependencies.
+   */
+  async getUser(userId: string, vaultToken: string): Promise<AuthUserDetailDto> {
+    const ctx: any = await (auth as any).$context;
+    const adapter = ctx.adapter;
+    const u = await adapter.findOne({
+      model: 'user',
+      where: [{ field: 'id', value: userId }],
+    });
+    if (!u) {
+      throw new NotFoundException(`Better-Auth user ${userId} not found`);
+    }
+
+    const v = await this.verificationService.findByUserId(userId);
+    const vaultUserId = v?.id ?? this.deriveVaultUserId(u.email, u.id);
+
+    let publicAddress: string | null = null;
+    try {
+      const keys = await this.walletService.getKeys(vaultToken);
+      publicAddress = keys.find((k) => k.user_id === vaultUserId)?.public_address ?? null;
+    } catch (err: any) {
+      this.logger.warn(
+        `getUser ${userId}: could not fetch vault keys (${err?.message ?? err})`,
+      );
+    }
+
+    return {
+      userId: u.id,
+      email: u.email,
+      name: u.name,
+      role: (u.role as AuthUserRole) ?? 'user',
+      vaultUserId,
+      publicAddress,
+      isVerified: v?.isVerified ?? false,
+      walletAddress: v?.walletAddress ?? null,
+      associatedAt: v?.associatedAt ? new Date(v.associatedAt).toISOString() : null,
+    };
+  }
 
   /**
    * Creates a Better-Auth user, mints a vault wallet, and writes the

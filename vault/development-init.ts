@@ -631,7 +631,7 @@ async function vaultApproleLogin(creds: { role_id: string; secret_id: string }):
 }
 
 async function apiSignIn(vaultToken: string): Promise<string> {
-  const response = await axios.post(`${API_BASE_URL}/v1/auth/sign-in/`, { vault_token: vaultToken });
+  const response = await axios.post(`${API_BASE_URL}/v1/auth/token`, { vault_token: vaultToken });
   const accessToken = response.data?.access_token;
   if (!accessToken) {
     throw new Error(`API sign-in did not return an access_token (status=${response.status})`);
@@ -649,7 +649,7 @@ async function createUserViaApi(accessToken: string, userId: string): Promise<an
 }
 
 async function waitForApi(baseUrl: string, attempts = 60, delayMs = 1000): Promise<void> {
-  const url = `${baseUrl}/v1/auth/sign-in/`;
+  const url = `${baseUrl}/v1/auth/token`;
   for (let i = 0; i < attempts; i++) {
     try {
       // We expect 4xx (missing body / bad token) once the server is up — that's fine,

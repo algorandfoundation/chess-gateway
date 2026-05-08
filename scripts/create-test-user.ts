@@ -9,7 +9,7 @@ import axios from 'axios';
  *
  *   1. Read the manager AppRole credentials from `manager-role-and-secrets.json`.
  *   2. Exchange them for a Vault `client_token` via Vault's AppRole login.
- *   3. Sign in to the pawn API (`POST /v1/auth/sign-in/`) to obtain a JWT.
+ *   3. Sign in to the pawn API (`POST /v1/auth/token`) to obtain a JWT.
  *   4. Create a new user "jim" (`POST /v1/wallet/user/`), which also triggers
  *      the on-chain DID publication for the user.
  *   5. Read back the cached DID record (`GET /v1/did/users/jim`) and print it.
@@ -40,7 +40,7 @@ async function vaultApproleLogin(creds: ApproleCreds): Promise<string> {
 }
 
 async function apiSignIn(vaultToken: string): Promise<string> {
-  const url = `${API_BASE_URL}/v1/auth/sign-in/`;
+  const url = `${API_BASE_URL}/v1/auth/token`;
   const response = await axios.post(url, { vault_token: vaultToken });
   const accessToken = response.data?.access_token;
   if (!accessToken) {

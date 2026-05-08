@@ -19,6 +19,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AlgoVaultTokenProvider } from './algo/algo-vault-token.provider';
 import { DeviceManifestService } from './devices/device-manifest.service';
 import { DeviceManifestController } from './devices/device-manifest.controller';
+import { DeviceManifestAdminController } from './devices/device-manifest-admin.controller';
 
 /**
  * Standalone Nest module exposing OID4VCI (issuance) and OID4VP (verification)
@@ -60,7 +61,12 @@ import { DeviceManifestController } from './devices/device-manifest.controller';
     // under which the on-chain DID is keyed.
     AuthModule,
   ],
-  controllers: [Oid4vcIssuerController, Oid4vcVerifierController, DeviceManifestController],
+  controllers: [
+    Oid4vcIssuerController,
+    Oid4vcVerifierController,
+    DeviceManifestController,
+    DeviceManifestAdminController,
+  ],
   providers: [
     Oid4vcConfig,
     AlgoVaultTokenProvider,

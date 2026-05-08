@@ -26,7 +26,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "vault:development:init": "npx ts-node vault/development-init.ts",
-    "api:test:create-user": "npx ts-node scripts/create-test-user.ts"
+    "api:test:create-user": "npx ts-node scripts/create-test-user.ts",
+    "api:seed-users": "npx ts-node scripts/seed-users.ts"
   },
   "dependencies": {
     "@algorandfoundation/algokit-utils": "10.0.0-beta.2",

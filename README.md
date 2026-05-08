@@ -115,7 +115,7 @@ POST http://localhost:8200/v1/auth/approle/login
 3. Use this `client_token` and get a JWT `access_token` for pawn's sign-in endpoint.
 
 ```
-POST http://localhost:3000/v1/auth/sign-in/
+POST http://localhost:3000/v1/auth/token
 
 {
     "vault_token": "{your_client_token_will_be_here}"

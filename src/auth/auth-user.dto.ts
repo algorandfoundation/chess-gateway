@@ -83,4 +83,46 @@ export class AuthUserResponseDto {
     description: 'Algorand address derived from the vault transit key.',
   })
   publicAddress?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'True once the user has completed a device + manifest attestation linking the better-auth account to the vault key.',
+  })
+  isVerified?: boolean;
+}
+
+/**
+ * Enriched view of a Better-Auth user: the same fields as
+ * `AuthUserResponseDto` plus their current `LinkVerification` and
+ * (if seeded) device manifest / DID document. Used by the manager
+ * UI to display "everything we know" about a single user.
+ */
+export class AuthUserDetailDto extends AuthUserResponseDto {
+  @ApiPropertyOptional({
+    description:
+      'Wallet address recorded on the link-verification row (set by the link attestation flow).',
+  })
+  walletAddress?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'When the better-auth ↔ vault mapping was last written.',
+  })
+  associatedAt?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Current did:key for this user, when a device manifest has been seeded.',
+  })
+  didKey?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Current revision number of the seeded device manifest.',
+  })
+  manifestVersion?: number | null;
+
+  @ApiPropertyOptional({
+    description: 'Full DID Document of the current device manifest revision.',
+    type: 'object',
+    additionalProperties: true,
+  })
+  didDocument?: Record<string, unknown> | null;
 }
