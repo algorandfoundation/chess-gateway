@@ -3,6 +3,7 @@ import { LinkService } from './link.service';
 import { VerificationService } from './verification/verification.service';
 import { VaultService } from '../vault/vault.service';
 import { AuthService } from '../auth/auth.service';
+import { IdentityService } from './identity.service';
 import { ConfigService } from '@nestjs/config';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { DidService } from '../did/did.service';
@@ -12,7 +13,9 @@ describe('LinkService', () => {
   let service: LinkService;
   let verificationService: VerificationService;
   let vaultService: VaultService;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let authService: AuthService;
+  let identityService: IdentityService;
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   let configService: ConfigService;
 
@@ -39,8 +42,11 @@ describe('LinkService', () => {
     publishUserDid: jest.fn(),
   };
 
-  const mockAuthService = {
+  const mockAuthService = {};
+
+  const mockIdentityService = {
     getUserIdByEmail: jest.fn(),
+    getUserEmail: jest.fn(),
   };
 
   const mockDeviceManifestService = {
@@ -66,6 +72,10 @@ describe('LinkService', () => {
           useValue: mockAuthService,
         },
         {
+          provide: IdentityService,
+          useValue: mockIdentityService,
+        },
+        {
           provide: VaultService,
           useValue: mockVaultService,
         },
@@ -87,6 +97,7 @@ describe('LinkService', () => {
     service = module.get<LinkService>(LinkService);
     verificationService = module.get<VerificationService>(VerificationService);
     authService = module.get<AuthService>(AuthService);
+    identityService = module.get<IdentityService>(IdentityService);
     vaultService = module.get<VaultService>(VaultService);
     configService = module.get<ConfigService>(ConfigService);
   });
@@ -101,7 +112,7 @@ describe('LinkService', () => {
 
   describe('linkResponse', () => {
     it('should associate account and link wallet if user ID is found and integrity is verified', async () => {
-      mockAuthService.getUserIdByEmail.mockResolvedValue('player123');
+      mockIdentityService.getUserIdByEmail.mockResolvedValue('player123');
       mockVerificationService.upsert.mockResolvedValue({ id: 'player123', walletAddress: '0xWallet' });
       mockVaultService.getTokenWithRole.mockResolvedValue('manager-token');
       mockVaultService.getUserPublicKey.mockResolvedValue(Buffer.alloc(32));
@@ -119,12 +130,12 @@ describe('LinkService', () => {
 
       expect(result.id).toBe('player123');
       expect(result.walletAddress).toBe('0xWallet');
-      expect(mockAuthService.getUserIdByEmail).toHaveBeenCalledWith('test@example.com');
+      expect(mockIdentityService.getUserIdByEmail).toHaveBeenCalledWith('test@example.com');
       expect(verificationService.upsert).toHaveBeenCalledWith('user123', 'player123', true, '0xWallet');
     });
 
     it('provisions an on-chain DID document when the player has none yet', async () => {
-      mockAuthService.getUserIdByEmail.mockResolvedValue('player123');
+      mockIdentityService.getUserIdByEmail.mockResolvedValue('player123');
       mockVerificationService.upsert.mockResolvedValue({ id: 'player123', walletAddress: '0xWallet' });
       mockVaultService.getTokenWithRole.mockResolvedValue('manager-token');
       mockVaultService.getUserPublicKey.mockResolvedValue(Buffer.alloc(32));
@@ -147,7 +158,7 @@ describe('LinkService', () => {
     });
 
     it('force-republishes when the player already has an on-chain DID document', async () => {
-      mockAuthService.getUserIdByEmail.mockResolvedValue('player123');
+      mockIdentityService.getUserIdByEmail.mockResolvedValue('player123');
       mockVerificationService.upsert.mockResolvedValue({ id: 'player123', walletAddress: '0xWallet' });
       mockVaultService.getTokenWithRole.mockResolvedValue('manager-token');
       mockVaultService.getUserPublicKey.mockResolvedValue(Buffer.alloc(32));
@@ -173,7 +184,7 @@ describe('LinkService', () => {
     });
 
     it('should throw NotFoundException if user ID is not found in AuthService', async () => {
-      mockAuthService.getUserIdByEmail.mockResolvedValue(null);
+      mockIdentityService.getUserIdByEmail.mockResolvedValue(null);
       await expect(
         service.linkResponse(
           'user123',
@@ -224,25 +235,25 @@ describe('LinkService', () => {
 
   describe('autoAssociate', () => {
     it('should associate account if email is found in AuthService and player exists in Vault', async () => {
-      mockAuthService.getUserIdByEmail.mockResolvedValue('vaultId');
+      mockIdentityService.getUserIdByEmail.mockResolvedValue('vaultId');
       jest.spyOn(service, 'getVaultPlayer').mockResolvedValue({ user_id: 'vaultId' } as any);
       jest.spyOn(service, 'associateAccount').mockResolvedValue({} as any);
 
       await service.autoAssociate('authUser', 'test@example.com');
 
-      expect(authService.getUserIdByEmail).toHaveBeenCalledWith('test@example.com');
+      expect(identityService.getUserIdByEmail).toHaveBeenCalledWith('test@example.com');
       expect(service.getVaultPlayer).toHaveBeenCalledWith('vaultId');
       expect(service.associateAccount).toHaveBeenCalledWith('authUser', 'vaultId');
     });
 
     it('should return null if email is not found in AuthService', async () => {
-      mockAuthService.getUserIdByEmail.mockResolvedValue(null);
+      mockIdentityService.getUserIdByEmail.mockResolvedValue(null);
       const result = await service.autoAssociate('authUser', 'unknown@example.com');
       expect(result).toBeNull();
     });
 
     it('should return null if player does not exist in Vault', async () => {
-      mockAuthService.getUserIdByEmail.mockResolvedValue('vaultId');
+      mockIdentityService.getUserIdByEmail.mockResolvedValue('vaultId');
       jest.spyOn(service, 'getVaultPlayer').mockResolvedValue(null);
       const result = await service.autoAssociate('authUser', 'test@example.com');
       expect(result).toBeNull();

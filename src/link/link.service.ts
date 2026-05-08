@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException, NotFoundException } from '@nes
 import { VerificationService } from './verification/verification.service';
 import { LinkVerification } from './verification/entities/link-verification.entity';
 import { AuthService } from '../auth/auth.service';
+import { IdentityService } from './identity.service';
 import { ConfigService } from '@nestjs/config';
 import { VaultService } from '../vault/vault.service';
 import { DidService } from '../did/did.service';
@@ -14,6 +15,7 @@ export class LinkService {
   constructor(
     private readonly verificationService: VerificationService,
     private readonly authService: AuthService,
+    private readonly identityService: IdentityService,
     private readonly configService: ConfigService,
     private readonly vaultService: VaultService,
     private readonly didService: DidService,
@@ -147,7 +149,7 @@ export class LinkService {
       throw new BadRequestException('App integrity verification failed.');
     }
 
-    const id = await this.authService.getUserIdByEmail(email);
+    const id = await this.identityService.getUserIdByEmail(email);
     if (!id) {
       throw new NotFoundException(`Email ${email} not found in the player directory.`);
     }
@@ -241,7 +243,7 @@ export class LinkService {
    * @returns The LinkVerification if association was successful, null otherwise.
    */
   async autoAssociate(userId: string, email: string): Promise<LinkVerification | null> {
-    const id = await this.authService.getUserIdByEmail(email);
+    const id = await this.identityService.getUserIdByEmail(email);
     if (!id) return null;
 
     const player = await this.getVaultPlayer(id);
