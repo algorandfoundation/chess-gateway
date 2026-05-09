@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { VaultService } from '../vault/vault.service';
 import { ChainService } from '../chain/chain.service';
 import { DidService } from '../did/did.service';
@@ -147,6 +147,61 @@ export class WalletService {
     };
   }
 
+  /**
+   * Permanently delete a user's vault transit key. Refuses to proceed if
+   * the user still holds any ASA balance or has a DID document on file —
+   * both are unrecoverable once the underlying signing key is gone.
+   * Callers should clawback/transfer assets and delete the DID record
+   * (`DELETE /v1/did/users/:user_id`) before retrying.
+   *
+   * Vault keys are created with `allow_deletion=false`; `transitDeleteKey`
+   * flips the config first then issues the DELETE.
+   */
+  async deleteUser(user_id: string, vault_token: string): Promise<void> {
+    // Resolve to the canonical vault id so callers may pass either the
+    // vault user id or the linked Better-Auth user id.
+    const resolvedId: string = await this.verificationService.resolveVaultUserId(user_id);
+
+    // Defensive guard #1: refuse if the user still holds any ASA. Best-effort —
+    // if the address/balance lookup fails the deletion still proceeds (the key
+    // may already be missing on-chain or the user never funded it).
+    try {
+      const publicKey: Buffer = await this.vaultService.getUserPublicKey(resolvedId, vault_token);
+      const encodedAddress: string = new Address(new Uint8Array(publicKey)).toString();
+      const holdings: AssetHolding[] = await this.chainService.getAccountAssetHoldings(encodedAddress);
+      const heldAssets = (holdings ?? []).filter((h) => {
+        const amount = h.amount;
+        if (typeof amount === 'bigint') return amount > 0n;
+        if (typeof amount === 'number') return amount > 0;
+        return amount !== undefined && amount !== null && String(amount) !== '0';
+      });
+      if (heldAssets.length > 0) {
+        const ids = heldAssets.map((h) => h['asset-id']).join(', ');
+        throw new ConflictException(
+          `Refusing to delete vault key '${resolvedId}': user still holds ${heldAssets.length} asset(s) [${ids}]. Clawback or transfer them first.`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof ConflictException) throw err;
+      Logger.warn(`deleteUser: asset-holding precheck failed for ${resolvedId} (${(err as Error).message}); continuing`);
+    }
+
+    // Defensive guard #2: refuse if a DID record (local cache or on-chain) exists.
+    const didRecord = await this.didService.resolveLocal(resolvedId);
+    if (didRecord) {
+      throw new ConflictException(
+        `Refusing to delete vault key '${resolvedId}': a DID document is still associated (${didRecord.did}). Delete it first via DELETE /v1/did/users/${resolvedId}.`,
+      );
+    }
+
+    const transitKeyPath: string = this.configService.get<string>('VAULT_TRANSIT_USERS_PATH');
+    await this.vaultService.transitDeleteKey(resolvedId, transitKeyPath, vault_token);
+    try {
+      await this.didService.deleteUserDid(resolvedId, vault_token);
+    } catch {
+      // The DID row is best-effort cleanup; the vault key is already gone.
+    }
+  }
   // Get all users
   async getKeys(vault_token: string): Promise<UserInfoResponseDto[]> {
     const keys: UserInfoResponseDto[] = (await this.vaultService.getKeys(vault_token)) as UserInfoResponseDto[];

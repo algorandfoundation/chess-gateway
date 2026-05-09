@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Request } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Request } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import { CreateAssetDto } from './create-asset.dto';
 import { CreateAssetResponseDto } from './create-asset-response.dto';
@@ -115,6 +115,20 @@ export class Wallet {
   })
   async userList(@Request() request: any): Promise<UserInfoResponseDto[]> {
     return this.walletService.getKeys(request.vault_token);
+  }
+  // Manager-only: permanently delete a vault transit key. The Better-Auth
+  // user (if any) bound to this `user_id` is left intact — `LinkVerification`
+  // rows referencing it will simply resolve to `null` until re-bound.
+  @Delete('wallet/users/:user_id')
+  @HttpCode(204)
+  @ApiOperation({
+    summary: 'Delete Vault Key',
+    description:
+      'Permanently delete the **Vault** transit key for the given `user_id`. ' +
+      'The Algorand address tied to that key becomes unrecoverable.',
+  })
+  async userDelete(@Request() request: any, @Param('user_id') user_id: string): Promise<void> {
+    return this.walletService.deleteUser(user_id, request.vault_token);
   }
 
   // Asset creation for manager

@@ -231,6 +231,42 @@ export class VaultService {
    * @param token - manager token
    * @returns
    */
+  /**
+   * Permanently delete a transit key. Vault refuses to delete a key whose
+   * `deletion_allowed` flag is false (our default at creation), so we first
+   * PATCH the key config to flip the flag and then issue the DELETE.
+   *
+   * @param keyName - user id (transit key name)
+   * @param transitKeyPath - path to the transit engine (e.g. `pawn/users`)
+   * @param token - vault token with permission to update + delete the key
+   */
+  async transitDeleteKey(keyName: string, transitKeyPath: string, token: string): Promise<void> {
+    // https://developer.hashicorp.com/vault/api-docs/secret/transit#update-key-configuration
+    const baseUrl: string = this.configService.get<string>('VAULT_BASE_URL');
+    const vaultNamespace: string = this.configService.get<string>('VAULT_NAMESPACE');
+    const headers = {
+      'X-Vault-Token': token,
+      'Content-Type': 'application/json',
+      ...(vaultNamespace ? { 'X-Vault-Namespace': vaultNamespace } : {}),
+    };
+    try {
+      await this.httpService.axiosRef.post(
+        `${baseUrl}/v1/${transitKeyPath}/keys/${keyName}/config`,
+        { deletion_allowed: true },
+        { headers },
+      );
+    } catch (error) {
+      throw vaultError(error);
+    }
+    try {
+      await this.httpService.axiosRef.delete(
+        `${baseUrl}/v1/${transitKeyPath}/keys/${keyName}`,
+        { headers },
+      );
+    } catch (error) {
+      throw vaultError(error);
+    }
+  }
   async getKeys(token: string): Promise<UserInfoDto[]> {
     const baseUrl: string = this.configService.get<string>('VAULT_BASE_URL');
     const transitKeyPath: string = this.configService.get<string>('VAULT_TRANSIT_USERS_PATH');
