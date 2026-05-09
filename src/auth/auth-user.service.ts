@@ -261,20 +261,20 @@ export class AuthUserService {
     }
 
     const verification = await this.verificationService.findByUserId(userId);
-    let vaultUserId = verification?.id ?? this.deriveVaultUserId(existing.email, userId);
+    let vaultUserId: string | null = verification?.id ?? null;
     let walletAddress: string | null = verification?.walletAddress ?? null;
 
+    // Vault operations only run when the manager explicitly supplies a
+    // `vaultUserId` — never as an implicit side-effect of a profile edit.
+    // Users without a vault binding (e.g. a name-only update from the
+    // user dashboard) are left untouched on the vault side; user-role
+    // tokens lack the policy to mint transit keys anyway.
     if (dto.vaultUserId && dto.vaultUserId !== vaultUserId) {
       vaultUserId = this.normaliseVaultUserId(dto.vaultUserId);
       const wallet = await this.walletService.userCreate(vaultUserId, vaultToken);
       walletAddress = wallet.public_address ?? walletAddress;
       // Re-binding to a different vault key resets verification —
       // the user must re-attest from the new device.
-      await this.verificationService.upsert(userId, vaultUserId, false);
-    } else if (!verification) {
-      // Backfill — user existed in Better-Auth but had no link row.
-      const wallet = await this.walletService.userCreate(vaultUserId, vaultToken);
-      walletAddress = wallet.public_address ?? walletAddress;
       await this.verificationService.upsert(userId, vaultUserId, false);
     }
 
