@@ -6,15 +6,18 @@ import * as path from 'path';
 
 console.log('[Auth] Initializing Better Auth instance...');
 
+// Public base URL of this service.
+const baseURL = process.env.BASE_URL || 'http://localhost:3000';
+
 export const auth = betterAuth({
   // Pass the better-sqlite3 Database directly so Better Auth manages the
   // schema (and `npx @better-auth/cli migrate` works) instead of us
   // wrapping a Kysely adapter by hand.
   database: new SQLite(path.join(process.cwd(), 'database.sqlite')),
-  baseURL: process.env.BETTER_AUTH_URL || 'http://localhost:3000',
+  baseURL,
   basePath: '/v1/link/auth',
-  trustedOrigins: [process.env.BETTER_AUTH_URL].filter(Boolean) as string[],
-  secret: process.env.BETTER_AUTH_SECRET || 'a-very-long-and-secure-secret-32-chars!!',
+  trustedOrigins: [baseURL],
+  secret: process.env.SESSION_AUTH_SECRET || 'a-very-long-and-secure-secret-32-chars!!',
   advanced: {
     disableOriginCheck: true,
     disableCSRFCheck: true,

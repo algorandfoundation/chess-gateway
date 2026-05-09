@@ -31,7 +31,7 @@ describe('Oid4vcConfig', () => {
 
   it('strips trailing slashes from base url and normalises paths', async () => {
     const cfg = await build({
-      OID4VC_BASE_URL: 'https://wallet.example.com//',
+      BASE_URL: 'https://wallet.example.com//',
       OID4VC_ISSUER_PATH: 'issuer/',
       OID4VC_VERIFIER_PATH: '/verifier/',
     });

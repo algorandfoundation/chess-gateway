@@ -264,7 +264,7 @@ Keys still managed by Askar:
 
 | Variable | Default | Description |
 |---|---|---|
-| `OID4VC_BASE_URL` | `http://localhost:3000` | Public base URL |
+| `BASE_URL` | `http://localhost:3000` | Public base URL of this service. Shared with Better Auth. |
 | `OID4VC_ISSUER_PATH` | `/oid4vci` | Path for OID4VCI protocol endpoints |
 | `OID4VC_VERIFIER_PATH` | `/oid4vp` | Path for OID4VP protocol endpoints |
 | `OID4VC_LABEL` | `pawn-oid4vc` | Credo agent label |

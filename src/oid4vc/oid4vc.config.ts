@@ -9,7 +9,7 @@ import { ConfigService } from '@nestjs/config';
  *
  * Env vars (all optional, sensible defaults provided for local dev):
  * - OID4VC_LABEL              Human readable agent label                         (default: `pawn-oid4vc`)
- * - OID4VC_BASE_URL           Public base URL of this service (no trailing /)   (default: `http://localhost:3000`)
+ * - BASE_URL                  Public base URL of this service (no trailing /)   (default: `http://localhost:3000`)
  * - OID4VC_WALLET_ID          Askar wallet id                                    (default: `pawn-oid4vc`)
  * - OID4VC_WALLET_KEY         Askar wallet master key                            (default: `pawn-oid4vc-key`)
  * - OID4VC_ISSUER_PATH        URL path mounted for OID4VCI endpoints             (default: `/oid4vci`)
@@ -44,10 +44,11 @@ export class Oid4vcConfig {
   }
 
   get baseUrl(): string {
-    let url = this.config.get<string>('OID4VC_BASE_URL', 'http://localhost:3000').trim();
+    const raw = this.config.get<string>('BASE_URL', 'http://localhost:3000');
+    let url = raw.trim();
     if (!/^https?:\/\//i.test(url)) {
       this.logger.warn(
-        `OID4VC_BASE_URL "${url}" is missing a scheme; defaulting to http://. Set the full URL (e.g. http://192.168.1.115:3000) to silence this warning.`,
+        `BASE_URL "${url}" is missing a scheme; defaulting to http://. Set the full URL (e.g. http://192.168.1.115:3000) to silence this warning.`,
       );
       url = `http://${url}`;
     }
