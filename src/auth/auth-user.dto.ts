@@ -94,6 +94,18 @@ export class AuthUserResponseDto {
       'True once the user has completed a device + manifest attestation linking the better-auth account to the vault key.',
   })
   isVerified?: boolean;
+  @ApiPropertyOptional({
+    description: 'ISO timestamp the better-auth user record was created.',
+    nullable: true,
+    type: String,
+  })
+  createdAt?: string | null;
+  @ApiPropertyOptional({
+    description: 'ISO timestamp the better-auth user record was last updated.',
+    nullable: true,
+    type: String,
+  })
+  updatedAt?: string | null;
 }
 
 /**

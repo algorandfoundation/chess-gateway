@@ -96,6 +96,8 @@ export class AuthUserService {
         isVerified: v?.isVerified ?? false,
         walletAddress: v?.walletAddress ?? null,
         associatedAt: v?.associatedAt ? new Date(v.associatedAt).toISOString() : null,
+        createdAt: u.createdAt ? new Date(u.createdAt).toISOString() : null,
+        updatedAt: u.updatedAt ? new Date(u.updatedAt).toISOString() : null,
       };
     });
   }
@@ -144,6 +146,8 @@ export class AuthUserService {
       isVerified: v?.isVerified ?? false,
       walletAddress: v?.walletAddress ?? null,
       associatedAt: v?.associatedAt ? new Date(v.associatedAt).toISOString() : null,
+      createdAt: u.createdAt ? new Date(u.createdAt).toISOString() : null,
+      updatedAt: u.updatedAt ? new Date(u.updatedAt).toISOString() : null,
     };
   }
 
