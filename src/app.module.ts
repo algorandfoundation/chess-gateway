@@ -9,6 +9,7 @@ import { LinkModule } from './link/link.module';
 import { DidModule } from './did/did.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Oid4vcModule } from './oid4vc/oid4vc.module';
+import { AssetModule } from './asset/asset.module';
 import { AppController } from './app.controller';
 import { HealthService } from './health.service';
 
@@ -30,6 +31,7 @@ import { HealthService } from './health.service';
     ChainModule,
     DidModule,
     Oid4vcModule,
+    AssetModule,
   ],
   controllers: [AppController],
   providers: [HealthService],

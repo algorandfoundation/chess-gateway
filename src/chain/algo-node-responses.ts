@@ -56,5 +56,11 @@ export interface AssetInfoResponse {
     total?: number | string;
     creator?: string;
     url?: string;
+    manager?: string;
+    reserve?: string;
+    freeze?: string;
+    clawback?: string;
+    'default-frozen'?: boolean;
+    'metadata-hash'?: string;
   };
 }
