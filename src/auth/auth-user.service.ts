@@ -284,6 +284,57 @@ export class AuthUserService {
     };
   }
 
+  /**
+   * Deletes a Better-Auth user along with their `LinkVerification`
+   * mapping. The vault transit key itself is intentionally left in
+   * place — it may be re-bound to a freshly created user via
+   * `POST /auth/user`, and Vault transit keys cannot be re-created
+   * with the same name once destroyed.
+   */
+  async deleteUser(userId: string): Promise<{ userId: string; deleted: true }> {
+    const ctx: any = await (auth as any).$context;
+    const adapter = ctx.adapter;
+    const existing = await adapter.findOne({
+      model: 'user',
+      where: [{ field: 'id', value: userId }],
+    });
+    if (!existing) {
+      throw new NotFoundException(`Better-Auth user ${userId} not found`);
+    }
+
+    try {
+      await this.verificationService.deleteByUserId(userId);
+    } catch (err: any) {
+      this.logger.warn(
+        `deleteUser: failed to remove verification for ${userId}: ${err?.message ?? err}`,
+      );
+    }
+
+    // Best-effort cleanup of related auth rows (sessions, accounts)
+    // before removing the user itself, so foreign-key-style relations
+    // don't leave orphans.
+    for (const model of ['session', 'account']) {
+      try {
+        await adapter.deleteMany({
+          model,
+          where: [{ field: 'userId', value: userId }],
+        });
+      } catch (err: any) {
+        this.logger.warn(
+          `deleteUser: failed to clean ${model} rows for ${userId}: ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    await adapter.delete({
+      model: 'user',
+      where: [{ field: 'id', value: userId }],
+    });
+
+    this.logger.log(`Deleted be:${userId} (${existing.email})`);
+    return { userId, deleted: true };
+  }
+
   private generateThrowawayPassword(): string {
     // Better-Auth requires a password column even though sign-in is
     // passwordless; this value is never surfaced to clients.

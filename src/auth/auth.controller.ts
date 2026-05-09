@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Put, Request } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Request } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { AuthUserService } from './auth-user.service';
 import { Public } from './constants';
@@ -155,5 +155,31 @@ export class Auth {
     @Param('userId') userId: string,
   ): Promise<AuthUserDetailDto> {
     return this.authUserService.getUser(userId, request.vault_token);
+  }
+
+  /**
+   * Deletes a Better-Auth user and their `LinkVerification` mapping.
+   * The vault transit key is preserved so it can be re-bound to a
+   * freshly provisioned user via `POST /auth/user`.
+   */
+  @ApiBearerAuth()
+  @Delete('auth/user/:userId')
+  @ApiOperation({
+    summary: 'Delete Intermezzo user',
+    description:
+      'Removes a Better-Auth user (and any sessions/accounts/verification rows). The underlying vault transit key is intentionally retained.',
+  })
+  @ApiOkResponse({
+    description: 'The user has been deleted.',
+    schema: {
+      example: { userId: 'b1cFxqd5QarPFxyEzeJQhkz1RhfExEol', deleted: true },
+    },
+  })
+  @ApiNotFoundResponse({ description: 'User not found' })
+  @ApiUnauthorizedResponse({ description: 'Unauthorized' })
+  async deleteUser(
+    @Param('userId') userId: string,
+  ): Promise<{ userId: string; deleted: true }> {
+    return this.authUserService.deleteUser(userId);
   }
 }

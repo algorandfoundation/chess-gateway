@@ -113,6 +113,14 @@ export class VerificationService {
   }
 
   /**
+   * Deletes any link verification rows owned by a Better-Auth user.
+   * No-op if none exists. Used when the user is deleted entirely.
+   */
+  async deleteByUserId(userId: string): Promise<void> {
+    await this.linkVerificationRepository.delete({ userId });
+  }
+
+  /**
    * Upserts a link verification for a user.
    *
    * `isVerified` defaults to `false` — verification is only granted
