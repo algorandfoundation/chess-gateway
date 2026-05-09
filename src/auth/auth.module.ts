@@ -4,7 +4,6 @@ import { JwtModule } from '@nestjs/jwt';
 import { Auth } from './auth.controller';
 import { AuthService } from './auth.service';
 import { AuthUserService } from './auth-user.service';
-import { AuthUserProvisioningService } from './auth-user-provisioning.service';
 import { APP_GUARD } from '@nestjs/core';
 import { AuthGuard } from './auth.guard';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -34,10 +33,6 @@ import { VerificationModule } from '../link/verification/verification.module';
   providers: [
     AuthService,
     AuthUserService,
-    // Eagerly instantiated so its `onModuleInit` registers the
-    // Better-Auth `user.create.after` hook before any request
-    // (including OTP / social sign-up) can land.
-    AuthUserProvisioningService,
     {
       provide: APP_GUARD,
       useClass: AuthGuard,

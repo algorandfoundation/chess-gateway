@@ -79,14 +79,20 @@ export class AuthUserService {
 
     return beUsers.map((u) => {
       const v = verificationByUserId.get(u.id);
-      const vaultUserId = v?.id ?? this.deriveVaultUserId(u.email, u.id);
+      // Only surface a vaultUserId / publicAddress once the user is
+      // actually bound to a vault transit key (manager provisioning
+      // via POST /auth/user). Self-signups remain unbound until a
+      // manager links them via PUT /auth/user/:userId.
+      const vaultUserId = v?.id ?? null;
       return {
         userId: u.id,
         email: u.email,
         name: u.name,
         role: (u.role as AuthUserRole) ?? 'user',
         vaultUserId,
-        publicAddress: publicAddressByVaultId.get(vaultUserId) ?? null,
+        publicAddress: vaultUserId
+          ? publicAddressByVaultId.get(vaultUserId) ?? null
+          : null,
         isVerified: v?.isVerified ?? false,
         walletAddress: v?.walletAddress ?? null,
         associatedAt: v?.associatedAt ? new Date(v.associatedAt).toISOString() : null,
@@ -113,16 +119,19 @@ export class AuthUserService {
     }
 
     const v = await this.verificationService.findByUserId(userId);
-    const vaultUserId = v?.id ?? this.deriveVaultUserId(u.email, u.id);
-
+    // Only surface a vaultUserId / publicAddress once the user is
+    // actually bound to a vault transit key (manager provisioning).
+    const vaultUserId = v?.id ?? null;
     let publicAddress: string | null = null;
-    try {
-      const keys = await this.walletService.getKeys(vaultToken);
-      publicAddress = keys.find((k) => k.user_id === vaultUserId)?.public_address ?? null;
-    } catch (err: any) {
-      this.logger.warn(
-        `getUser ${userId}: could not fetch vault keys (${err?.message ?? err})`,
-      );
+    if (vaultUserId) {
+      try {
+        const keys = await this.walletService.getKeys(vaultToken);
+        publicAddress = keys.find((k) => k.user_id === vaultUserId)?.public_address ?? null;
+      } catch (err: any) {
+        this.logger.warn(
+          `getUser ${userId}: could not fetch vault keys (${err?.message ?? err})`,
+        );
+      }
     }
 
     return {

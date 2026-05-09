@@ -3,7 +3,6 @@ import { betterAuth } from 'better-auth';
 import { admin, emailOTP, openAPI } from 'better-auth/plugins';
 import SQLite from 'better-sqlite3';
 import * as path from 'path';
-import { dispatchUserCreated } from './auth-hooks';
 
 console.log('[Auth] Initializing Better Auth instance...');
 
@@ -31,22 +30,6 @@ export const auth = betterAuth({
         type: 'string',
         required: false,
         input: false,
-      },
-    },
-  },
-  // Hook into Better Auth's user lifecycle so the gateway can mirror
-  // every newly-created Better-Auth user into the vault: ensure a
-  // transit key exists for them and write a `LinkVerification` row
-  // that maps `userId → vaultUserId`. The mapping starts as
-  // `isVerified=false` and is only flipped to `true` once the user
-  // successfully attests their device + did:key manifest via the
-  // link flow (`LinkService.linkResponse`).
-  databaseHooks: {
-    user: {
-      create: {
-        after: async (user: any) => {
-          await dispatchUserCreated(user);
-        },
       },
     },
   },

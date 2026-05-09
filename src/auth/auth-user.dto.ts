@@ -76,8 +76,13 @@ export class AuthUserResponseDto {
   @ApiProperty({ enum: AUTH_USER_ROLES })
   role!: AuthUserRole;
 
-  @ApiProperty({ description: 'Vault transit-key name bound to this user.' })
-  vaultUserId!: string;
+  @ApiProperty({
+    description:
+      'Vault transit-key name bound to this user, or `null` when no vault key has been provisioned yet.',
+    nullable: true,
+    type: String,
+  })
+  vaultUserId!: string | null;
 
   @ApiPropertyOptional({
     description: 'Algorand address derived from the vault transit key.',
