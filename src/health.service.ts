@@ -110,8 +110,8 @@ export class HealthService {
   }
 
   private async probeAlgod(): Promise<HealthServiceProbeDto> {
-    const scheme = this.configService.get<string>('NODE_HTTP_SCHEME') || 'http';
-    const host = this.configService.get<string>('NODE_HOST') || 'localhost';
+    const scheme = this.configService.get<string>('NODE_HTTP_SCHEME') || '';
+    const host = this.configService.get<string>('NODE_HOST') || '';
     const port = this.configService.get<string>('NODE_PORT') || '';
     const token = this.configService.get<string>('NODE_TOKEN') || '';
     const authority = port ? `${host}:${port}` : host;
