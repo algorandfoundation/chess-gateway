@@ -4,7 +4,7 @@ import assert from 'assert';
 import { Address } from '@algorandfoundation/algokit-utils';
 
 // Constants
-const VAULT_BASE_URL = 'http://vault:8200';
+const VAULT_BASE_URL = 'http://localhost:8200';
 const VAULT_INIT_ENDPOINT = '/v1/sys/init';
 const VAULT_UNSEAL_ENDPOINT = '/v1/sys/unseal';
 const VAULT_MOUNTS_ENDPOINT = '/v1/sys/mounts';
@@ -15,11 +15,15 @@ const VAULT_SEAL_KEYS_FILE = 'vault-seal-keys.json';
 
 const MANAGERS_ROLE_AND_SECRET_KEYS_FILE = 'manager-role-and-secrets.json';
 const MANAGER_ADDRESS_FILE = 'manager-address.txt';
-const USERS_ROLE_AND_SECRET_KEYS_FILE = 'user-role-and-secrets.json';
 const USERS_POLICY_NAME = 'pawn_users_policy';
 const USERS_APP_ROLE_NAME = 'pawn_users_approle';
+const USERS_SCOPED_POLICY_NAME = 'pawn_users_scoped_policy';
 const MANAGERS_POLICY_NAME = 'pawn_managers_policy';
 const MANAGERS_APP_ROLE_NAME = 'pawn_managers_approle';
+// Prefix used by per-user AppRoles created via the gateway (see
+// VaultService.createUserAppRole). The manager policy below grants management
+// of any AppRole under this prefix, and the scoped user policy is bound to it.
+const PER_USER_APP_ROLE_PREFIX = 'pawn_user_';
 
 // Vault `/v1/sys/health` status codes — see
 // https://developer.hashicorp.com/vault/api-docs/system/health
@@ -192,13 +196,39 @@ async function initManagersTransitEngine(token: string) {
   }
 }
 
-// Function to create ACL policies in Vault
-async function createACLPolicies(token: string) {
+// Look up the accessor of the enabled `approle/` auth method. We need this
+// at policy-creation time to template the per-user scoped policy against the
+// AppRole's entity alias name (which equals the role_id we pin to user_id).
+async function getApproleAccessor(token: string): Promise<string> {
+  const response = await axios.get(`${VAULT_BASE_URL}/v1/sys/auth`, {
+    headers: { 'X-Vault-Token': token },
+  });
+  const approle = response.data?.['approle/'] ?? response.data?.data?.['approle/'];
+  if (!approle?.accessor) {
+    throw new Error('Could not resolve `approle/` auth method accessor from `/v1/sys/auth`');
+  }
+  return approle.accessor as string;
+}
+async function createACLPolicies(token: string, approleAccessor: string) {
   try {
+    // The templated user policy resolves the AppRole's entity-alias name into
+    // the path. For AppRole tokens the alias name equals the role's `role_id`,
+    // which we pin to the gateway's `user_id` when provisioning per-user roles
+    // (see VaultService.createUserAppRole). The result: a per-user token can
+    // only touch `pawn/users/keys/<their user_id>` and `pawn/users/sign/<their user_id>`.
+    //
+    // https://developer.hashicorp.com/vault/docs/concepts/policies#templated-policies
+    const userAliasTpl = `{{identity.entity.aliases.${approleAccessor}.name}}`;
+
     // Define the ACL policies
     const policies = {
       // https://developer.hashicorp.com/vault/api-docs/secret/transit
 
+      // Legacy shared user role policy. Retained for backwards compatibility
+      // with any external tooling that may still authenticate against the
+      // shared `pawn_users_approle`, but new user-facing flows should use
+      // USERS_SCOPED_POLICY_NAME via a per-user AppRole instead of this
+      // shared role. The bootstrap no longer writes `user-role-and-secrets.json`.
       [USERS_POLICY_NAME]: {
         path: {
           // USER
@@ -210,6 +240,32 @@ async function createACLPolicies(token: string) {
           },
           [`${VAULT_TRANSIT_USERS_PATH}/keys/+/+`]: {
             capabilities: ['deny'],
+          },
+          // 3) allow list users (matches what the gateway's `getKeys` calls)
+          [`${VAULT_TRANSIT_USERS_PATH}/keys`]: {
+            capabilities: ['list'],
+          },
+          // 4) allow /sign path (matches `signAsUser` in the gateway)
+          [`${VAULT_TRANSIT_USERS_PATH}/sign/*`]: {
+            capabilities: ['create', 'read', 'update'],
+          },
+        },
+      },
+      // Per-identity scoped user policy. Used by per-user AppRoles created
+      // via VaultService.createUserAppRole. Every path is templated against
+      // the caller's entity-alias name (== role_id == user_id), so the same
+      // policy yields a different effective scope for every user.
+      [USERS_SCOPED_POLICY_NAME]: {
+        path: {
+          // Allow read/update on the caller's own key only. Key creation is
+          // performed by the manager during the /wallet/user provisioning
+          // flow, so `create` is intentionally NOT granted here.
+          [`${VAULT_TRANSIT_USERS_PATH}/keys/${userAliasTpl}`]: {
+            capabilities: ['read', 'update'],
+          },
+          // Allow signing only with the caller's own key.
+          [`${VAULT_TRANSIT_USERS_PATH}/sign/${userAliasTpl}`]: {
+            capabilities: ['create', 'update'],
           },
         },
       },
@@ -247,6 +303,28 @@ async function createACLPolicies(token: string) {
           // 4 allow /sign path
           [`${VAULT_TRANSIT_USERS_PATH}/sign/*`]: {
             capabilities: ['create', 'read', 'update'],
+          },
+
+          // PER-USER APPROLE MANAGEMENT
+          // ---------------------------
+          // The gateway provisions a per-user AppRole during userCreate,
+          // pins its role_id to the user_id, and generates a secret_id.
+          // The manager token needs to be able to perform those calls
+          // against any role under the `pawn_user_*` prefix.
+          [`auth/approle/role/${PER_USER_APP_ROLE_PREFIX}*`]: {
+            capabilities: ['create', 'read', 'update', 'delete'],
+          },
+          [`auth/approle/role/${PER_USER_APP_ROLE_PREFIX}*/role-id`]: {
+            capabilities: ['create', 'read', 'update'],
+          },
+          [`auth/approle/role/${PER_USER_APP_ROLE_PREFIX}*/secret-id`]: {
+            capabilities: ['create', 'update'],
+          },
+          [`auth/approle/role/${PER_USER_APP_ROLE_PREFIX}*/secret-id/lookup`]: {
+            capabilities: ['create', 'update'],
+          },
+          [`auth/approle/role/${PER_USER_APP_ROLE_PREFIX}*/secret-id/destroy`]: {
+            capabilities: ['create', 'update'],
           },
         },
       },
@@ -480,11 +558,12 @@ async function main() {
 
   console.log('\n\n------------\nVault Root Token:\n', sealKeys.root_token, '\n------------\n\n');
 
-  await createACLPolicies(sealKeys.root_token);
+  // AppRole auth must be enabled first so we can read its accessor and use
+  // it inside the templated user policy created below.
   await enableAppRoleIfNotEnabledAuth(sealKeys.root_token);
+  const approleAccessor = await getApproleAccessor(sealKeys.root_token);
+  await createACLPolicies(sealKeys.root_token, approleAccessor);
   await getOrCreateAppRoles(sealKeys.root_token);
-  console.log('\n\n\nUSER SECRETS\n-----');
-  await logRoleIdAndSecretId(USERS_APP_ROLE_NAME, sealKeys.root_token, USERS_ROLE_AND_SECRET_KEYS_FILE);
   console.log('\n\n\nMANAGER SECRETS\n-----');
   await logRoleIdAndSecretId(MANAGERS_APP_ROLE_NAME, sealKeys.root_token, MANAGERS_ROLE_AND_SECRET_KEYS_FILE);
   console.log('\n\n\nMANAGER ALGORAND PUBLIC ADDRESS\n------');

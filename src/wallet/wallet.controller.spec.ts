@@ -60,11 +60,14 @@ describe('Wallet Controller', () => {
       const userId = 'user123';
       const vaultToken = 'vault-token-abc';
       const expectedPublicAddress = 'PUBLIC_ADDRESS_XYZ';
+      const expectedSecretId = 'b6a23f3e-7b1f-4c84-9c8a-2a3d3a5e9f10';
 
       mockWalletService.userCreate.mockResolvedValueOnce({
         user_id: userId,
         public_address: expectedPublicAddress,
         algoBalance: '0',
+        role_id: userId,
+        secret_id: expectedSecretId,
       });
 
       const result: UserInfoResponseDto = await walletController.userCreate(
@@ -75,7 +78,37 @@ describe('Wallet Controller', () => {
       expect(result.user_id).toEqual(userId);
       expect(result.public_address).toEqual(expectedPublicAddress);
       expect(result.algoBalance).toEqual('0'); // Initial balance is set to 0
+      // The per-user AppRole credentials provisioned by WalletService must be
+      // passed through verbatim — they are the only handle the caller will
+      // ever get on the user's `secret_id`.
+      expect(result.role_id).toEqual(userId);
+      expect(result.secret_id).toEqual(expectedSecretId);
       expect(mockWalletService.userCreate).toHaveBeenCalledWith(userId, vaultToken);
+    });
+  });
+
+  describe('userCreateAppRole', () => {
+    it('should delegate to WalletService.createUserAppRole with the path param and request vault token', async () => {
+      // Legacy-user backfill route: the controller is intentionally thin —
+      // it just forwards the `:user_id` path param and the manager's vault
+      // token from the request. All identity/preflight checks live in
+      // `WalletService.createUserAppRole`, so the only thing worth asserting
+      // here is the wiring.
+      const vaultToken = 'manager-vault-token';
+      const userId = 'legacy-user-7';
+      const expected = {
+        user_id: userId,
+        role_id: userId,
+        secret_id: 'b6a23f3e-7b1f-4c84-9c8a-2a3d3a5e9f10',
+      };
+
+      mockWalletService.createUserAppRole.mockResolvedValueOnce(expected);
+
+      const requestMock = { vault_token: vaultToken };
+      const result = await walletController.userCreateAppRole(requestMock, userId);
+
+      expect(mockWalletService.createUserAppRole).toHaveBeenCalledWith(userId, vaultToken);
+      expect(result).toEqual(expected);
     });
   });
 

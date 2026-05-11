@@ -3,6 +3,7 @@ import { VaultService } from '../vault/vault.service';
 import { ChainService } from '../chain/chain.service';
 import { CreateAssetDto } from './create-asset.dto';
 import { UserInfoResponseDto } from './user-info-response.dto';
+import { UserAppRoleResponseDto } from './user-app-role-response.dto';
 import { ConfigService } from '@nestjs/config';
 import { ManagerDetailDto } from './manager-detail.dto';
 import { plainToClass } from 'class-transformer';
@@ -62,7 +63,54 @@ export class WalletService {
 
     const public_key: Buffer = await this.vaultService.transitCreateKey(user_id, transitKeyPath, vault_token);
     const public_address: string = new Address(public_key).toString();
-    return { user_id, public_address, algoBalance: '0' }; // Initial balance is set to 0
+
+    // Provision a per-user AppRole scoped (via the templated
+    // `pawn_users_scoped_policy`) to this user's transit key only. The
+    // returned `secret_id` is the only time we can capture it — Vault will
+    // never disclose it again — so it is surfaced on the response for the
+    // manager to deliver to the user out-of-band.
+    const userAppRole = await this.vaultService.createUserAppRole(user_id, vault_token);
+
+    return {
+      user_id,
+      public_address,
+      algoBalance: '0', // Initial balance is set to 0
+      role_id: userAppRole.role_id,
+      secret_id: userAppRole.secret_id,
+    };
+  }
+
+  /**
+   * Provision a per-user Vault AppRole for a pre-existing ("legacy") user
+   * whose transit key was created before the per-user-AppRole feature
+   * shipped. New users created via {@link userCreate} already receive their
+   * AppRole at creation time; this endpoint is the backfill path for the
+   * rest.
+   *
+   * Preflight: we resolve the user's transit public key first so a missing
+   * user surfaces as a Vault 404 (propagated by `getUserPublicKey`) instead
+   * of silently provisioning an AppRole for a non-existent identity.
+   *
+   * Note: `createUserAppRole` is effectively idempotent against the role
+   * itself (POSTing the role config is a create-or-update in Vault), but
+   * every call mints a *new* `secret_id`. Calling this endpoint a second
+   * time for the same user therefore rotates their `secret_id` — invalidate
+   * the previous one out-of-band if that matters to the caller.
+   */
+  async createUserAppRole(user_id: string, vault_token: string): Promise<UserAppRoleResponseDto> {
+    // Verify the user actually exists before we provision a role for them.
+    // Vault returns 404 on an unknown transit key; that 404 is what we want
+    // surfaced to the manager so they don't end up with orphan AppRoles
+    // pointing at keys that were never created.
+    await this.vaultService.getUserPublicKey(user_id, vault_token);
+
+    const userAppRole = await this.vaultService.createUserAppRole(user_id, vault_token);
+
+    return {
+      user_id,
+      role_id: userAppRole.role_id,
+      secret_id: userAppRole.secret_id,
+    };
   }
 
   // Get all users

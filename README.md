@@ -290,7 +290,7 @@ Since there are vault volumes and side effects of the `vault:development:init` p
 
 ```
 sudo rm -rf volumes node_modules dist data;
-sudo rm vault-seal-keys.json package-lock.json manager-role-and-secrets.json user-role-and-secrets.json;
+sudo rm vault-seal-keys.json package-lock.json manager-role-and-secrets.json;
 ```
 # SECURITY
 

@@ -53,18 +53,55 @@ describe('WalletService', () => {
   it('\(OK) userCreate()', async () => {
     const pubKey = randomBytes(32);
     const userId = '123581253191824129481240513501928401928';
+    const secretId = 'b6a23f3e-7b1f-4c84-9c8a-2a3d3a5e9f10';
 
     vaultServiceMock.transitCreateKey.mockResolvedValueOnce(pubKey);
+    vaultServiceMock.createUserAppRole.mockResolvedValueOnce({ role_id: userId, secret_id: secretId });
     chainServiceMock.getAccountBalance.mockResolvedValueOnce(0n);
 
     const result = await walletService.userCreate(userId, 'vault_token');
 
-    // expect(vaultServiceMock.getUserPublicKey).toHaveBeenCalledWith(userId, 'vault_token');
-    // expect(chainServiceMock.getAccountBalance).toHaveBeenCalledWith(new Address(pubKey).toString());
+    expect(vaultServiceMock.createUserAppRole).toHaveBeenCalledWith(userId, 'vault_token');
     expect(result).toStrictEqual({
       public_address: new Address(pubKey).toString(),
       user_id: userId,
       algoBalance: '0',
+      role_id: userId,
+      secret_id: secretId,
+    });
+  });
+
+  describe('createUserAppRole()', () => {
+    const userId = 'legacy-user-42';
+    const pubKey = randomBytes(32);
+    const secretId = 'b6a23f3e-7b1f-4c84-9c8a-2a3d3a5e9f10';
+
+    it('provisions an AppRole for an existing legacy user', async () => {
+      // getUserPublicKey is the preflight — it confirms the user actually
+      // exists in Vault before we mint an AppRole for them.
+      vaultServiceMock.getUserPublicKey.mockResolvedValueOnce(pubKey);
+      vaultServiceMock.createUserAppRole.mockResolvedValueOnce({ role_id: userId, secret_id: secretId });
+
+      const result = await walletService.createUserAppRole(userId, 'vault_token');
+
+      expect(vaultServiceMock.getUserPublicKey).toHaveBeenCalledWith(userId, 'vault_token');
+      expect(vaultServiceMock.createUserAppRole).toHaveBeenCalledWith(userId, 'vault_token');
+      expect(result).toStrictEqual({
+        user_id: userId,
+        role_id: userId,
+        secret_id: secretId,
+      });
+    });
+
+    it('does not provision an AppRole if the user does not exist', async () => {
+      // If the preflight fails (Vault 404 for the missing transit key) we
+      // must abort — provisioning a role for a non-existent user would
+      // create an orphaned, unrevokeable credential.
+      const notFound = new Error('not found');
+      vaultServiceMock.getUserPublicKey.mockRejectedValueOnce(notFound);
+
+      await expect(walletService.createUserAppRole('ghost', 'vault_token')).rejects.toBe(notFound);
+      expect(vaultServiceMock.createUserAppRole).not.toHaveBeenCalled();
     });
   });
 

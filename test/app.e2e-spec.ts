@@ -15,9 +15,13 @@ const VAULT_TRANSIT_USERS_PATH = 'pawn/users';
 const VAULT_TRANSIT_MANAGERS_PATH = 'pawn/managers';
 const VAULT_MANAGER_KEY = 'manager';
 
-// Load role and secret information from JSON files
+// Load manager role/secret from the file produced by `development-init.ts`.
+// Note: we intentionally no longer read `user-role-and-secrets.json` — the
+// shared `pawn_users_approle` is legacy. Tests that need a user-scoped token
+// now mint a per-user AppRole via the regular `POST /wallet/user/` flow
+// (see `createUserAndLoginAsUser` below) so the e2e suite exercises the same
+// per-identity Vault scoping path that production callers use.
 const MANAGER_ROLE_AND_SECRET = JSON.parse(fs.readFileSync('manager-role-and-secrets.json').toString());
-const USER_ROLE_AND_SECRET = JSON.parse(fs.readFileSync('user-role-and-secrets.json').toString());
 
 /**
  * Current endpoints:
@@ -60,6 +64,50 @@ describe('App E2E', () => {
   const signInToPawn = async (vaultToken: string) => {
     const response = await axios.post(`${APP_BASE_URL}/auth/sign-in/`, { vault_token: vaultToken });
     return response.data.access_token;
+  };
+
+  /**
+   * Provision a brand new user via the manager-facing `/wallet/user/` endpoint
+   * and immediately log in as that user using the per-user AppRole credentials
+   * returned in the response. This replaces the previous pattern of loading
+   * the shared `USER_ROLE_AND_SECRET` from disk.
+   *
+   * Returns everything callers tend to need: the gateway-level `userId`, the
+   * Algorand `public_address`, the raw Vault token (for direct Vault probes
+   * such as the negative `/keys/<id>/config` test), and the gateway access
+   * token (the JWT minted by `/auth/sign-in/`).
+   */
+  const createUserAndLoginAsUser = async (managerAccessToken: string) => {
+    const userId = randomBytes(32).toString('hex');
+    const createUserResponse = await axios.post(
+      `${APP_BASE_URL}/wallet/user/`,
+      { user_id: userId },
+      {
+        headers: {
+          Authorization: `Bearer ${managerAccessToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+      },
+    );
+    expect(createUserResponse.status).toBe(201);
+    // `role_id` / `secret_id` are only present in the create-user response
+    // (Vault won't disclose `secret_id` again), so they must be captured here.
+    expect(typeof createUserResponse.data.role_id).toBe('string');
+    expect(typeof createUserResponse.data.secret_id).toBe('string');
+
+    const userVaultToken = await loginToVault({
+      role_id: createUserResponse.data.role_id,
+      secret_id: createUserResponse.data.secret_id,
+    });
+    const userAccessToken = await signInToPawn(userVaultToken);
+
+    return {
+      userId,
+      public_address: createUserResponse.data.public_address as string,
+      vaultToken: userVaultToken,
+      accessToken: userAccessToken,
+    };
   };
 
   // Function to get manager address
@@ -145,12 +193,15 @@ describe('App E2E', () => {
     });
 
     it('(FAIL) User fails to fetch manager role due to permissions', async () => {
-      const vaultToken = await loginToVault(USER_ROLE_AND_SECRET);
-      const accessToken = await signInToPawn(vaultToken);
+      // Bootstrap a per-user identity via the manager and then exercise the
+      // negative case from that user's perspective — the scoped policy must
+      // not let a user reach `pawn/managers/...`.
+      const managerAccessToken = await signInToPawn(await loginToVault(MANAGER_ROLE_AND_SECRET));
+      const user = await createUserAndLoginAsUser(managerAccessToken);
 
       await expect(
         axios.get(`${APP_BASE_URL}/wallet/users/manager`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
+          headers: { Authorization: `Bearer ${user.accessToken}` },
         }),
       ).rejects.toMatchObject({ response: { status: 404 } }); // HTTP 404 Not Found
     });
@@ -170,62 +221,41 @@ describe('App E2E', () => {
     });
 
     it('(FAIL) Cannot fetch ALL users with the users role', async () => {
-      const vaultToken = await loginToVault(USER_ROLE_AND_SECRET);
-      const accessToken = await signInToPawn(vaultToken);
+      // The templated `pawn_users_scoped_policy` deliberately does NOT grant
+      // `list` on `pawn/users/keys`; per-user tokens must be unable to
+      // enumerate other users.
+      const managerAccessToken = await signInToPawn(await loginToVault(MANAGER_ROLE_AND_SECRET));
+      const user = await createUserAndLoginAsUser(managerAccessToken);
 
       await expect(
         axios.get(`${APP_BASE_URL}/wallet/users`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
+          headers: { Authorization: `Bearer ${user.accessToken}` },
         }),
       ).rejects.toMatchObject({ response: { status: 403 } }); // HTTP 403 Forbidden
     });
   });
 
   describe('Vault', () => {
-    it('(FAIL) User fails to fetch manager role due to permissions', async () => {
-      const vaultToken = await loginToVault(USER_ROLE_AND_SECRET);
-      const accessToken = await signInToPawn(vaultToken);
-
-      await expect(
-        axios.get(`${APP_BASE_URL}/wallet/users/manager`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        }),
-      ).rejects.toMatchObject({ response: { status: 404 } }); // HTTP 404 Not Found
-    });
-
     it('(FAIL) Cannot config user and manager keys', async () => {
+      // Provision a user via the manager flow; the returned `role_id` /
+      // `secret_id` are exactly the credentials the end user would hold, so
+      // exercising Vault directly with that token confirms the scoped policy
+      // really does forbid `/config` even on the caller's own key.
       const managerVaultToken = await loginToVault(MANAGER_ROLE_AND_SECRET);
-      const userVaultToken = await loginToVault(USER_ROLE_AND_SECRET);
-      const accessToken = await signInToPawn(managerVaultToken);
+      const managerAccessToken = await signInToPawn(managerVaultToken);
+      const user = await createUserAndLoginAsUser(managerAccessToken);
 
-      // random user id
-      const user_uid = randomBytes(32).toString('hex');
+      const vaultTokens = [user.vaultToken, managerVaultToken];
 
-      const create_user_response = await axios.post(
-        `${APP_BASE_URL}/wallet/user/`,
-        { user_id: user_uid },
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-        },
-      );
-      expect(create_user_response.status).toBe(201);
-
-      // can not use `config` on users key
-      const vaultKeys = [userVaultToken, managerVaultToken];
-
-      for (const vaultKey of vaultKeys) {
-        // can not config user
+      for (const vaultToken of vaultTokens) {
+        // can not config user (not even one's own key — `keys/+/+` is denied)
         await expect(
           axios.post(
-            `${VAULT_BASE_URL}/v1/${VAULT_TRANSIT_USERS_PATH}/keys/${user_uid}/config`,
+            `${VAULT_BASE_URL}/v1/${VAULT_TRANSIT_USERS_PATH}/keys/${user.userId}/config`,
             { deletion_allowed: true },
             {
               headers: {
-                'X-Vault-Token': `${vaultKey}`,
+                'X-Vault-Token': `${vaultToken}`,
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
               },
@@ -240,7 +270,7 @@ describe('App E2E', () => {
             { deletion_allowed: true },
             {
               headers: {
-                'X-Vault-Token': `${vaultKey}`,
+                'X-Vault-Token': `${vaultToken}`,
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
               },
@@ -300,12 +330,12 @@ describe('App E2E', () => {
 
     // Test to verify that a user with the user role cannot create an asset
     it('(FAIL) Can not create with user role', async () => {
-      const vaultToken = await loginToVault(USER_ROLE_AND_SECRET);
-      const accessToken = await signInToPawn(vaultToken);
+      const managerAccessToken = await signInToPawn(await loginToVault(MANAGER_ROLE_AND_SECRET));
+      const user = await createUserAndLoginAsUser(managerAccessToken);
 
       await expect(
         axios.post(`${APP_BASE_URL}/wallet/transactions/create-asset`, assetData, {
-          headers: { Authorization: `Bearer ${accessToken}` },
+          headers: { Authorization: `Bearer ${user.accessToken}` },
         }),
       ).rejects.toMatchObject({ response: { status: 403 } }); // HTTP 403 Forbidden
     }, 60000);
@@ -465,36 +495,23 @@ describe('App E2E', () => {
     }, 60000);
 
     it('(FAIL) can transfer asset if user permission', async () => {
-      const userVaultToken = await loginToVault(USER_ROLE_AND_SECRET);
-      const userAccessToken = await signInToPawn(userVaultToken);
-
       const managerVaultToken = await loginToVault(MANAGER_ROLE_AND_SECRET);
       const managerAccessToken = await signInToPawn(managerVaultToken);
 
-      // Create new user
-
-      const userId = randomBytes(32).toString('hex');
-      const createUserResponse = await axios.post(
-        `${APP_BASE_URL}/wallet/user/`,
-        { user_id: userId },
-        {
-          headers: {
-            Authorization: `Bearer ${managerAccessToken}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-        },
-      );
-      expect(createUserResponse.status).toBe(201);
+      // The acting user (the one whose token will be rejected by the
+      // manager-only endpoint) and the target of the transfer are both minted
+      // as per-user AppRoles via the regular manager flow.
+      const actingUser = await createUserAndLoginAsUser(managerAccessToken);
+      const targetUser = await createUserAndLoginAsUser(managerAccessToken);
 
       assetTransferRequestData.assetId = Number(assetId);
-      assetTransferRequestData.userId = userId;
+      assetTransferRequestData.userId = targetUser.userId;
 
       // Transfer the asset
 
       await expect(
         axios.post(`${APP_BASE_URL}/wallet/transactions/transfer-asset`, assetTransferRequestData, {
-          headers: { Authorization: `Bearer ${userAccessToken}` },
+          headers: { Authorization: `Bearer ${actingUser.accessToken}` },
         }),
       ).rejects.toMatchObject({ response: { status: 403 } });
     }, 60000);
@@ -661,30 +678,17 @@ describe('App E2E', () => {
       // ############################################################
     }, 60000);
     it('(FAIL) can not clawback asset if user permission', async () => {
-      const userVaultToken = await loginToVault(USER_ROLE_AND_SECRET);
-      const userAccessToken = await signInToPawn(userVaultToken);
-
       const managerVaultToken = await loginToVault(MANAGER_ROLE_AND_SECRET);
       const managerAccessToken = await signInToPawn(managerVaultToken);
 
-      // Create new user
-
-      const userId = randomBytes(32).toString('hex');
-      const createUserResponse = await axios.post(
-        `${APP_BASE_URL}/wallet/user/`,
-        { user_id: userId },
-        {
-          headers: {
-            Authorization: `Bearer ${managerAccessToken}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-        },
-      );
-      expect(createUserResponse.status).toBe(201);
+      // `actingUser` is the user who will attempt the clawback (must be 403);
+      // `targetUser` is the holder we move assets to first so there is
+      // something to claw back.
+      const actingUser = await createUserAndLoginAsUser(managerAccessToken);
+      const targetUser = await createUserAndLoginAsUser(managerAccessToken);
 
       assetClawbackRequestData.assetId = Number(assetId);
-      assetClawbackRequestData.userId = userId;
+      assetClawbackRequestData.userId = targetUser.userId;
 
       // Transfer the asset
       const response1 = await axios.post(
@@ -700,7 +704,7 @@ describe('App E2E', () => {
       // clawback the asset
       await expect(
         axios.post(`${APP_BASE_URL}/wallet/transactions/clawback-asset`, assetClawbackRequestData, {
-          headers: { Authorization: `Bearer ${userAccessToken}` },
+          headers: { Authorization: `Bearer ${actingUser.accessToken}` },
         }),
       ).rejects.toMatchObject({ response: { status: 403 } });
     }, 60000);

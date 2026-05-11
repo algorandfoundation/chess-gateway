@@ -8,6 +8,23 @@ import { UserInfoDto } from './user-info.dto';
 export type KeyType = 'ed25519' | 'ecdsa-p256';
 export type HashAlgorithm = 'sha2-256' | 'sha2-512';
 
+// Prefix for per-user AppRoles provisioned via createUserAppRole. Must match
+// the `auth/approle/role/pawn_user_*` paths granted by `pawn_managers_policy`
+// in `vault/development-init.ts`, and the role naming consumed by the templated
+// `pawn_users_scoped_policy`.
+export const PER_USER_APP_ROLE_PREFIX = 'pawn_user_';
+export const USERS_SCOPED_POLICY_NAME = 'pawn_users_scoped_policy';
+
+// Vault AppRole role names allow alphanumerics plus `-`, `_`, `.`. Any other
+// character would either be rejected by Vault or, worse, silently break the
+// 1:1 mapping between role name and user id. Validate explicitly.
+const APPROLE_NAME_SAFE_RE = /^[A-Za-z0-9._-]+$/;
+
+export type UserAppRoleCredentials = {
+  role_id: string;
+  secret_id: string;
+};
+
 @Injectable()
 export class VaultService {
   constructor(
@@ -200,6 +217,83 @@ export class VaultService {
     const transitKeyPath: string = this.configService.get<string>('VAULT_TRANSIT_MANAGERS_PATH');
 
     return this.getKey(manager_id, transitKeyPath, token);
+  }
+
+  /**
+   * Provision a per-user AppRole scoped to a single transit key via the
+   * templated `pawn_users_scoped_policy`. The returned credentials let the
+   * end user authenticate to Vault with a token whose ACL is restricted to
+   * their own `pawn/users/keys/<user_id>` and `pawn/users/sign/<user_id>`
+   * paths — and nothing else.
+   *
+   * Two important details:
+   *  - The role name is `pawn_user_<user_id>`; the `pawn_user_*` prefix is
+   *    what `pawn_managers_policy` grants management of, so this call
+   *    requires a manager Vault token.
+   *  - We pin the role's `role_id` to the raw `user_id`. Vault uses
+   *    `role_id` as the AppRole token's entity-alias name, which is what
+   *    the templated policy `{{identity.entity.aliases.<accessor>.name}}`
+   *    resolves to at request time. Keeping `role_id == user_id` is what
+   *    makes the per-identity scoping actually work.
+   *
+   * @param user_id  Gateway-level user id; becomes both the role-name suffix
+   *                 and the pinned `role_id`. Must be `[A-Za-z0-9._-]+`.
+   * @param token    A Vault token authorised by `pawn_managers_policy`.
+   * @returns        `{ role_id, secret_id }` — caller is responsible for
+   *                 delivering these to the user out-of-band.
+   */
+  async createUserAppRole(user_id: string, token: string): Promise<UserAppRoleCredentials> {
+    if (!APPROLE_NAME_SAFE_RE.test(user_id)) {
+      // Bad inputs would land on the request path verbatim and either be
+      // rejected by Vault or — worse — broaden the role's scope by hitting
+      // an unexpected endpoint. Fail closed.
+      throw new HttpErrorByCode[400](
+        `Invalid user_id for per-user AppRole; expected [A-Za-z0-9._-]+, got "${user_id}"`,
+      );
+    }
+
+    const baseUrl: string = this.configService.get<string>('VAULT_BASE_URL');
+    const roleName = `${PER_USER_APP_ROLE_PREFIX}${user_id}`;
+    const headers = { 'X-Vault-Token': token };
+
+    try {
+      // 1. Create (or update) the role bound to the templated user policy.
+      //    `bind_secret_id=true` is the AppRole default but we set it
+      //    explicitly so future readers don't have to look it up.
+      await this.httpService.axiosRef.post(
+        `${baseUrl}/v1/auth/approle/role/${roleName}`,
+        {
+          token_policies: [USERS_SCOPED_POLICY_NAME],
+          token_type: 'batch',
+          bind_secret_id: true,
+        },
+        { headers },
+      );
+
+      // 2. Pin role_id to the user_id so the entity alias name == user_id.
+      //    Without this, the templated policy would resolve to a random UUID
+      //    and the user would have no usable scope.
+      await this.httpService.axiosRef.post(
+        `${baseUrl}/v1/auth/approle/role/${roleName}/role-id`,
+        { role_id: user_id },
+        { headers },
+      );
+
+      // 3. Mint a fresh secret_id to hand back to the caller.
+      const secretIdResponse: AxiosResponse = await this.httpService.axiosRef.post(
+        `${baseUrl}/v1/auth/approle/role/${roleName}/secret-id`,
+        {},
+        { headers },
+      );
+
+      return {
+        role_id: user_id,
+        secret_id: secretIdResponse.data.data.secret_id,
+      };
+    } catch (error) {
+      Logger.error(`Failed to provision per-user AppRole '${roleName}'`, JSON.stringify(error?.response?.data));
+      throw new HttpErrorByCode[error.response?.status ?? 500]('VaultException');
+    }
   }
 
   /**

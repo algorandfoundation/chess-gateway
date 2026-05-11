@@ -348,4 +348,74 @@ describe('VaultService', () => {
       expect(result.toString('base64')).toBe(fakePublicKeyBase64);
     });
   });
+
+  describe('createUserAppRole', () => {
+    const baseUrl = 'http://vault';
+    const managerToken = 'manager-token';
+    const userId = 'user_123';
+    const roleName = `pawn_user_${userId}`;
+
+    beforeEach(() => {
+      // The surrounding suite's top-level `beforeEach` calls `jest.resetAllMocks()`,
+      // but `httpService` is constructed once in `beforeAll`, so its method
+      // mocks retain the call history accumulated by earlier tests. Clear the
+      // ones we assert against here so `toHaveBeenNthCalledWith` and
+      // `not.toHaveBeenCalled` reflect only this test's traffic.
+      (httpService.axiosRef.post as jest.Mock).mockReset();
+    });
+
+    it('\(OK) creates the role, pins role_id to user_id, and returns a fresh secret_id', async () => {
+      const secretId = 'b6a23f3e-7b1f-4c84-9c8a-2a3d3a5e9f10';
+      (configService.get as jest.Mock).mockReturnValue(baseUrl);
+
+      // Three sequential POSTs: role create, role-id pin, secret-id mint.
+      // Only the last one's body matters for the return value.
+      (httpService.axiosRef.post as jest.Mock)
+        .mockResolvedValueOnce({ status: 200, data: {} } as AxiosResponse)
+        .mockResolvedValueOnce({ status: 204, data: {} } as AxiosResponse)
+        .mockResolvedValueOnce({ status: 200, data: { data: { secret_id: secretId } } } as AxiosResponse);
+
+      const result = await vaultService.createUserAppRole(userId, managerToken);
+
+      expect(result).toEqual({ role_id: userId, secret_id: secretId });
+
+      const headers = { 'X-Vault-Token': managerToken };
+      expect(httpService.axiosRef.post).toHaveBeenNthCalledWith(
+        1,
+        `${baseUrl}/v1/auth/approle/role/${roleName}`,
+        expect.objectContaining({
+          token_policies: ['pawn_users_scoped_policy'],
+          bind_secret_id: true,
+        }),
+        { headers },
+      );
+      // role_id pin is the load-bearing step — confirm it is set to user_id.
+      expect(httpService.axiosRef.post).toHaveBeenNthCalledWith(
+        2,
+        `${baseUrl}/v1/auth/approle/role/${roleName}/role-id`,
+        { role_id: userId },
+        { headers },
+      );
+      expect(httpService.axiosRef.post).toHaveBeenNthCalledWith(
+        3,
+        `${baseUrl}/v1/auth/approle/role/${roleName}/secret-id`,
+        {},
+        { headers },
+      );
+    });
+
+    it('\(FAIL) rejects unsafe user_id values before contacting Vault', async () => {
+      // A `/` in the user_id would let the caller climb out of the per-user
+      // AppRole path; the guard must fire before any HTTP traffic happens.
+      await expect(vaultService.createUserAppRole('bad/user', managerToken)).rejects.toThrow(HttpErrorByCode[400]);
+      expect(httpService.axiosRef.post).not.toHaveBeenCalled();
+    });
+
+    it('\(FAIL) surfaces Vault errors as the matching HttpException', async () => {
+      (configService.get as jest.Mock).mockReturnValue(baseUrl);
+      (httpService.axiosRef.post as jest.Mock).mockRejectedValueOnce({ response: { status: 403, data: {} } });
+
+      await expect(vaultService.createUserAppRole(userId, managerToken)).rejects.toThrow(HttpErrorByCode[403]);
+    });
+  });
 });

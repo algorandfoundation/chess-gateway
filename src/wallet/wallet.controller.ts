@@ -3,6 +3,7 @@ import { WalletService } from './wallet.service';
 import { CreateAssetDto } from './create-asset.dto';
 import { CreateAssetResponseDto } from './create-asset-response.dto';
 import { UserInfoResponseDto } from './user-info-response.dto';
+import { UserAppRoleResponseDto } from './user-app-role-response.dto';
 import { CreateUserDto } from './create-user.dto';
 import { AssetTransferRequestDto } from './asset-transfer-request.dto';
 import { AssetTransferResponseDto } from './asset-transfer-response.dto';
@@ -109,6 +110,38 @@ export class Wallet {
   })
   async userCreate(@Request() request: any, @Body() newUserParams: CreateUserDto): Promise<UserInfoResponseDto> {
     return this.walletService.userCreate(newUserParams.user_id, request.vault_token);
+  }
+
+  // Backfill endpoint: provision a per-user Vault AppRole for a legacy user
+  // (one whose transit key was created before per-user AppRoles existed).
+  // New users get their AppRole automatically via `userCreate`; this is the
+  // remediation path for the pre-feature population. Requires a manager
+  // Vault token (Vault enforces this via `pawn_managers_policy`'s
+  // `auth/approle/role/pawn_user_*` grant).
+  @Post('wallet/user/:user_id/app-role/')
+  @ApiOperation({
+    summary: 'Create Per-User AppRole (Legacy Backfill)',
+    description:
+      'Provision a per-user **Vault AppRole** for an existing **User** that was created before the ' +
+      'per-user-AppRole feature shipped. Returns the `role_id` and a freshly-minted `secret_id`; the ' +
+      '`secret_id` is shown exactly once. Calling this endpoint a second time for the same user ' +
+      'rotates their `secret_id` and invalidates the prior one.',
+  })
+  @ApiCreatedResponse({
+    description: 'The per-user AppRole has been successfully provisioned.',
+    type: UserAppRoleResponseDto,
+  })
+  @ApiNotFoundResponse({
+    description: 'Not Found — no transit key exists for the supplied `user_id`.',
+  })
+  @ApiBadRequestResponse({
+    description: 'Bad Request',
+  })
+  async userCreateAppRole(
+    @Request() request: any,
+    @Param('user_id') user_id: string,
+  ): Promise<UserAppRoleResponseDto> {
+    return this.walletService.createUserAppRole(user_id, request.vault_token);
   }
 
   // Endpont to get all users keys
