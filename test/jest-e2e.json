@@ -1,10 +1,14 @@
 {
-  "moduleFileExtensions": ["js", "json", "ts"],
+  "moduleFileExtensions": ["js", "mjs", "json", "ts"],
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
+  "extensionsToTreatAsEsm": [".ts", ".mts"],
   "transform": {
-    "^.+\\.(t|j)s$": "ts-jest"
+    "^.+\\.m?tsx?$": ["ts-jest", { "useESM": true, "tsconfig": { "module": "ESNext", "moduleResolution": "bundler", "allowJs": true } }]
   },
-  "transformIgnorePatterns": ["node_modules/(?!@algorandfoundation/algokit-utils|@noble/hashes|@noble/ed25519)"]
+  "moduleNameMapper": {
+    "^(\\.{1,2}/.*)\\.js$": "$1"
+  },
+  "transformIgnorePatterns": ["node_modules/(?!@algorandfoundation/algokit-utils|@noble/hashes|@noble/ed25519|@thallesp/nestjs-better-auth|better-auth)"]
 }
