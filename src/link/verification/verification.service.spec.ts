@@ -2,13 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { VerificationService } from './verification.service';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { LinkVerification } from './entities/link-verification.entity';
-import { Repository } from 'typeorm';
 import { NotFoundException } from '@nestjs/common';
 
 describe('VerificationService', () => {
   let service: VerificationService;
-  let repository: Repository<LinkVerification>;
-
   const mockRepository = {
     find: jest.fn(),
     findOneBy: jest.fn(),
@@ -30,7 +27,6 @@ describe('VerificationService', () => {
     }).compile();
 
     service = module.get<VerificationService>(VerificationService);
-    repository = module.get<Repository<LinkVerification>>(getRepositoryToken(LinkVerification));
   });
 
   afterEach(() => {

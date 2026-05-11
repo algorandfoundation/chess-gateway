@@ -1,11 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { LinkService } from './link.service';
 import { VerificationService } from './verification/verification.service';
-import { LinkVerification } from './verification/entities/link-verification.entity';
 import { VaultService } from '../vault/vault.service';
 import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
-import { Repository } from 'typeorm';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 
 describe('LinkService', () => {
@@ -13,7 +11,6 @@ describe('LinkService', () => {
   let verificationService: VerificationService;
   let vaultService: VaultService;
   let authService: AuthService;
-  let configService: ConfigService;
 
   const mockVerificationService = {
     findAll: jest.fn(),
@@ -67,7 +64,6 @@ describe('LinkService', () => {
     verificationService = module.get<VerificationService>(VerificationService);
     authService = module.get<AuthService>(AuthService);
     vaultService = module.get<VaultService>(VaultService);
-    configService = module.get<ConfigService>(ConfigService);
   });
 
   afterEach(() => {
@@ -83,9 +79,15 @@ describe('LinkService', () => {
       mockAuthService.getUserIdByEmail.mockResolvedValue('player123');
       mockVerificationService.upsert.mockResolvedValue({ id: 'player123', walletAddress: '0xWallet' });
 
-      const result = await service.linkResponse('user123', 'test@example.com', '0xWallet', {
-        integrityToken: 'valid-token',
-      }, 'challenge123');
+      const result = await service.linkResponse(
+        'user123',
+        'test@example.com',
+        '0xWallet',
+        {
+          integrityToken: 'valid-token',
+        },
+        'challenge123',
+      );
 
       expect(result.id).toBe('player123');
       expect(result.walletAddress).toBe('0xWallet');
@@ -94,15 +96,21 @@ describe('LinkService', () => {
     });
 
     it('should throw BadRequestException if integrity verification fails', async () => {
-      await expect(
-        service.linkResponse('user123', 'test@example.com', '0xWallet', {}, 'challenge123'),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.linkResponse('user123', 'test@example.com', '0xWallet', {}, 'challenge123')).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should throw NotFoundException if user ID is not found in AuthService', async () => {
       mockAuthService.getUserIdByEmail.mockResolvedValue(null);
       await expect(
-        service.linkResponse('user123', 'unknown@example.com', '0xWallet', { integrityToken: 'valid-token' }, 'challenge123'),
+        service.linkResponse(
+          'user123',
+          'unknown@example.com',
+          '0xWallet',
+          { integrityToken: 'valid-token' },
+          'challenge123',
+        ),
       ).rejects.toThrow(NotFoundException);
     });
   });
@@ -238,7 +246,6 @@ describe('LinkService', () => {
     });
   });
 
-
   describe('getVerifications', () => {
     it('should return verifications if token is valid', async () => {
       const verifications = [{ id: 'player1' }];
@@ -256,12 +263,9 @@ describe('LinkService', () => {
     it('should throw BadRequestException if vault verification fails', async () => {
       mockVaultService.getKey.mockRejectedValue(new Error('Vault error'));
 
-      await expect(
-        service.getVerifications('player1', 'invalid-token'),
-      ).rejects.toThrow(BadRequestException);
+      await expect(service.getVerifications('player1', 'invalid-token')).rejects.toThrow(BadRequestException);
     });
   });
-
 
   describe('getVaultPlayer', () => {
     it('should return vault player if found', async () => {

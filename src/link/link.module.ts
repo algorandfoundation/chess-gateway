@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { LinkService } from './link.service';
 import { LinkController } from './link.controller';
 import { VaultModule } from '../vault/vault.module';
