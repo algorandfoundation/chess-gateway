@@ -1,9 +1,11 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { VerificationService } from './verification/verification.service';
 import { LinkVerification } from './verification/entities/link-verification.entity';
 import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { VaultService } from '../vault/vault.service';
+import { auth } from './auth';
+import { OtpLookupResponseDto } from './link.dto';
 
 @Injectable()
 export class LinkService {
@@ -194,5 +196,47 @@ export class LinkService {
       this.logger.error(`Failed to fetch vault player ${id}`, error.stack);
       return null;
     }
+  }
+
+  /**
+   * @deprecated Demo-only helper. Returns the latest OTP issued to `email`
+   * for the given `type` from Better Auth's `verification` store.
+   *
+   * Guarded by the manager Vault approle: the caller's `vaultToken` must be
+   * able to read the managers transit key; otherwise `ForbiddenException`
+   * is thrown. Do NOT enable this endpoint in production.
+   */
+  async getOtpForManager(email: string, type: string, vaultToken: string): Promise<OtpLookupResponseDto> {
+    if (!vaultToken) {
+      throw new ForbiddenException('Manager Vault token required.');
+    }
+    try {
+      await this.vaultService.getManagerPublicKey(vaultToken);
+    } catch (error) {
+      this.logger.warn(`getOtpForManager: vault token failed manager check: ${error?.message ?? error}`);
+      throw new ForbiddenException('Manager role required.');
+    }
+
+    const identifier = `${type}-otp-${email}`;
+    const ctx = await auth.$context;
+    const rows: any[] = await ctx.adapter.findMany({
+      model: 'verification',
+      where: [{ field: 'identifier', value: identifier }],
+      sortBy: { field: 'expiresAt', direction: 'desc' },
+      limit: 1,
+    });
+    const row = rows?.[0];
+
+    if (!row) {
+      throw new NotFoundException(`No OTP found for identifier '${identifier}'.`);
+    }
+
+    const raw: string = typeof row.value === 'string' ? row.value : String(row.value ?? '');
+    const sepIdx = raw.indexOf(':');
+    const otp = sepIdx >= 0 ? raw.slice(0, sepIdx) : raw;
+    const attempts = sepIdx >= 0 ? Number.parseInt(raw.slice(sepIdx + 1), 10) || 0 : 0;
+    const expiresAt = row.expiresAt instanceof Date ? row.expiresAt.toISOString() : String(row.expiresAt);
+
+    return { email, type, otp, attempts, expiresAt };
   }
 }

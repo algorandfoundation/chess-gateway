@@ -1,9 +1,9 @@
-import { Controller, Get, Post, Body, BadRequestException, UseGuards, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Body, BadRequestException, UseGuards, Logger, Query, Request } from '@nestjs/common';
 import { LinkService } from './link.service';
-import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiCookieAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiCookieAuth, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { AuthGuard as BetterAuthGuard, OptionalAuth, Session } from '@thallesp/nestjs-better-auth';
 import { Public } from '../auth/constants';
-import { LinkResponseDto, ChallengeResponseDto } from './link.dto';
+import { LinkResponseDto, ChallengeResponseDto, OtpLookupResponseDto } from './link.dto';
 import type { LinkSession } from './link.types';
 import { auth } from './auth';
 
@@ -119,5 +119,45 @@ export class LinkController {
       verification,
       player,
     };
+  }
+
+  /**
+   * @deprecated Demo / development helper. Returns the latest OTP issued to a
+   * given email/type pair so a manager can complete the sign-in flow when
+   * stdout/logs aren't accessible (e.g. live demos). Requires a manager
+   * Algorand Vault token in the `Authorization` header — the global
+   * `AuthGuard` extracts `vault_token` from the JWT, and `LinkService`
+   * verifies the token has manager-approle access by reading the managers
+   * transit key. Do **NOT** enable this endpoint in production.
+   */
+  @Get('otp')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: '[DEPRECATED] Look up the latest OTP for a registered user (manager only)',
+    description:
+      'Returns the most recent OTP issued by Better Auth for the given email and type. ' +
+      'Guarded by the manager Vault approle. Intended for demos/development only — do not enable in production.',
+    deprecated: true,
+  })
+  @ApiQuery({ name: 'email', required: true, description: 'Email the OTP was issued for' })
+  @ApiQuery({
+    name: 'type',
+    required: false,
+    description: 'OTP type: sign-in (default), email-verification, or forget-password',
+  })
+  @ApiResponse({ status: 200, type: OtpLookupResponseDto })
+  @ApiResponse({ status: 401, description: 'Missing or invalid bearer token.' })
+  @ApiResponse({ status: 403, description: 'The provided token does not have manager-role access.' })
+  @ApiResponse({ status: 404, description: 'No OTP exists for that email/type.' })
+  async getOtp(
+    @Request() request: any,
+    @Query('email') email: string,
+    @Query('type') type = 'sign-in',
+  ): Promise<OtpLookupResponseDto> {
+    if (!email) {
+      throw new BadRequestException('Query parameter `email` is required.');
+    }
+    this.logger.warn(`getOtp (deprecated): manager OTP lookup for email=${email} type=${type}`);
+    return this.linkService.getOtpForManager(email, type, request.vault_token);
   }
 }

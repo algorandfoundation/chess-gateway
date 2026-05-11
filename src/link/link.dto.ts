@@ -27,3 +27,20 @@ export class ChallengeResponseDto {
   @ApiProperty({ example: 'a-very-long-unique-challenge-string' })
   challenge: string;
 }
+
+export class OtpLookupResponseDto {
+  @ApiProperty({ example: 'user@example.com', description: 'The email the OTP was issued for' })
+  email: string;
+
+  @ApiProperty({ example: 'sign-in', description: 'The OTP type (e.g. sign-in, email-verification, forget-password)' })
+  type: string;
+
+  @ApiProperty({ example: '123456', description: 'The plain OTP value stored by Better Auth' })
+  otp: string;
+
+  @ApiProperty({ example: 0, description: 'Number of verification attempts already consumed' })
+  attempts: number;
+
+  @ApiProperty({ example: '2026-01-01T00:00:00.000Z', description: 'OTP expiry timestamp (ISO 8601)' })
+  expiresAt: string;
+}

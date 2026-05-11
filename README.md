@@ -157,6 +157,39 @@ POST http://localhost:3000/v1/auth/sign-in/
 Authorization: Bearer {access-token}
 ```
 
+### Looking up an OTP for a registered user (deprecated, manager-only)
+
+The account-linking flow uses Better Auth's `emailOTP` plugin. In development the OTP is logged to the pawn container's stdout by `sendVerificationOTP` in `src/link/auth.ts`:
+
+```
+[OTP] To: user@example.com, OTP: 123456, Type: sign-in
+```
+
+When stdout/logs are not accessible (e.g. during a live demo), pawn exposes a **deprecated, manager-only** helper endpoint that returns the most recent OTP issued by Better Auth for a given email/type pair:
+
+```
+GET http://localhost:3000/v1/link/otp?email=user@example.com&type=sign-in
+Authorization: Bearer {your-manager-access-token}
+```
+
+`type` defaults to `sign-in` and also accepts `email-verification` or `forget-password` (the values used by `emailOTP`). The endpoint is gated by the manager Vault approle — internally it requires the bearer JWT to embed a `vault_token` that can read the managers transit key. A user-role token will be rejected with `403`.
+
+Example response:
+
+```json
+{
+  "email": "user@example.com",
+  "type": "sign-in",
+  "otp": "123456",
+  "attempts": 0,
+  "expiresAt": "2026-01-01T00:00:00.000Z"
+}
+```
+
+> **Deprecated / demo-only.** This endpoint is marked `@deprecated` in the OpenAPI spec and exists purely so demos can recover OTPs without scraping container logs. It must not be exposed in production: replace `sendVerificationOTP` in `src/link/auth.ts` with a real email transport and remove (or further restrict) this endpoint before deploying.
+
+> **Note**: The OTP is single-use and expires after `expiresIn` seconds (3600 by default — see `emailOTP({ ... })` in `src/link/auth.ts`).
+
 ## CLI mode
 Pawn also supports a CLI mode, in which you can use for a personal wallet and tool. 
 
