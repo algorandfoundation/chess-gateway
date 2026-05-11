@@ -23,9 +23,21 @@ import { VerificationModule } from '../link/verification/verification.module';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       global: true,
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET'),
-      }),
+      useFactory: async (configService: ConfigService) => {
+        const secret = configService.get<string>('JWT_SECRET');
+        if (!secret) {
+          // Fail fast at startup with an actionable message instead of
+          // letting `jsonwebtoken` throw the cryptic
+          // `secretOrPrivateKey must have a value` on the first signing
+          // call (e.g. POST /v1/auth/token). dotenv treats a leading
+          // `#` in a `.env` value as a comment, so `JWT_SECRET=#foo`
+          // ends up empty — set a real value.
+          throw new Error(
+            'JWT_SECRET is not set. Configure a non-empty JWT_SECRET in the gateway environment (note: dotenv treats a leading `#` as a comment).',
+          );
+        }
+        return { secret };
+      },
       inject: [ConfigService],
     }),
   ],
