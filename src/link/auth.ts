@@ -9,6 +9,18 @@ console.log('[Auth] Initializing Better Auth instance...');
 // Public base URL of this service.
 const baseURL = process.env.BASE_URL || 'http://localhost:3000';
 
+// Google social SSO is optional: only register the provider when both
+// the client id and secret are configured. Operators that haven't wired
+// up Google OAuth yet should still get a working gateway (OTP + passkeys).
+const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+const googleEnabled = Boolean(googleClientId && googleClientSecret);
+if (!googleEnabled) {
+  console.log(
+    '[Auth] GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not set — Google social provider disabled.',
+  );
+}
+
 export const auth = betterAuth({
   // Pass the better-sqlite3 Database directly so Better Auth manages the
   // schema (and `npx @better-auth/cli migrate` works) instead of us
@@ -36,12 +48,14 @@ export const auth = betterAuth({
       },
     },
   },
-  socialProviders: {
-    google: {
-      clientId: process.env.GOOGLE_CLIENT_ID || 'mock-id',
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || 'mock-secret',
-    },
-  },
+  socialProviders: googleEnabled
+    ? {
+        google: {
+          clientId: googleClientId as string,
+          clientSecret: googleClientSecret as string,
+        },
+      }
+    : {},
   plugins: [
     emailOTP({
       async sendVerificationOTP({ email, otp, type }) {
