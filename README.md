@@ -51,6 +51,35 @@ For most information, you can refer to the [Hashicorp Vault ACL documentation](h
 
 # Setup Development Environment
 
+## Prerequisites
+
+- [Node.js](https://nodejs.org/) and [Yarn](https://yarnpkg.com/) (for installing dependencies and running the test suite).
+- [Docker](https://www.docker.com/) + Docker Compose (used to run Vault and pawn).
+- [AlgoKit](https://github.com/algorandfoundation/algokit-cli) (required if you want to run integration / e2e tests against a local Algorand network).
+- Standard CLI tools: `bash`, `awk`, `curl`, `jq` (used by the helper scripts under `scripts/`).
+
+Install the Node dependencies before running anything else:
+
+```bash
+yarn
+```
+
+## Set up an Algorand LocalNet (optional, recommended for tests)
+
+The e2e suite signs and submits real Algorand transactions, so it needs a chain to talk to. The easiest option is AlgoKit's LocalNet, which we bring up and pin into `.env` via a helper script:
+
+```bash
+./scripts/setup_localnet.sh
+```
+
+What this does:
+
+1. Runs `algokit localnet start` (skip with `SKIP_LOCALNET_START=1` if it's already running).
+2. Waits for algod to be ready on `http://localhost:4001`.
+3. Reads the live `genesis-id` / `genesis-hash` from algod and writes them into `.env`. LocalNet generates a fresh genesis whenever its data dir is reset, so the committed `.env` values cannot be trusted across runs — this step keeps pawn signing against the right chain.
+
+If you would rather use TestNet, you can skip this script and leave the default `NODE_HOST` / `GENESIS_*` values in `.env`.
+
 ## Build and run docker
 ```bash
 docker compose up -d vault pawn;
@@ -264,22 +293,35 @@ $ yarn test
 
 ## Integration Tests
 
-1) Adding some ALGO to manager:
+The end-to-end suite (`test/app.e2e-spec.ts`) drives the running pawn API, so it requires:
 
-If your manager address does not have enough ALGO, you need to add some ALGO to run integration tests.
+1. A running pawn + vault stack (`docker compose up -d vault pawn`).
+2. Vault initialized (`yarn vault:development:init` — this also writes `manager-address.txt`).
+3. An Algorand network reachable by pawn (LocalNet or TestNet, see the setup section above).
+4. The manager Algorand account funded — otherwise asset/transfer/app-call tests fail with `Unexpected Error. You have to add some algo to manager address: ...`.
 
-You should have seen the manager address in the `Setup Vault Keys` step.
-You can also find the manager address using the `/v1/wallet/manager/` endpoint. You need the manager's `access_token`.
+### 1) Fund the manager account
+
+**LocalNet (recommended).** After `setup_localnet.sh` and `vault:development:init` have both run, fund the manager from one of LocalNet's pre-funded wallets:
+
+```bash
+./scripts/fund_manager.sh
+# or override the amount (microAlgos):
+PREFUND_AMOUNT=2000000000 ./scripts/fund_manager.sh
+```
+
+This reads the manager address from `manager-address.txt`, picks the highest-balance LocalNet account as the funder, and sends `PREFUND_AMOUNT` microAlgos (default 1,000,000,000) to it via `algokit goal clerk send`.
+
+**TestNet.** Dispense ALGO from https://bank.testnet.algorand.network/ to the manager address. You can find the address in `manager-address.txt`, in the output of `vault:development:init`, or via the API:
+
 ```
 GET http://localhost:3000/v1/wallet/manager/
 Authorization: Bearer {your-manager-access-token}
 ```
 
-You can use https://bank.testnet.algorand.network/ to dispense some ALGO.
+### 2) Run the tests
 
-2) Run tests:
-
-```
+```bash
 yarn test:e2e
 ```
 
@@ -290,7 +332,14 @@ Since there are vault volumes and side effects of the `vault:development:init` p
 
 ```
 sudo rm -rf volumes node_modules dist data;
-sudo rm vault-seal-keys.json package-lock.json manager-role-and-secrets.json user-role-and-secrets.json;
+sudo rm vault-seal-keys.json package-lock.json manager-role-and-secrets.json user-role-and-secrets.json manager-address.txt;
+```
+
+If you were using LocalNet, also reset it so the genesis is regenerated cleanly:
+
+```bash
+algokit localnet reset
+./scripts/setup_localnet.sh
 ```
 # SECURITY
 
