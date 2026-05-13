@@ -29,6 +29,10 @@ services:
     environment:
       NODE_HOST: algod
       NODE_PORT: "8080"
+      # Inside the algokit_sandbox network the algod container exposes
+      # algod on :8080 and kmd on :7833 (host mappings 4001/4002).
+      # Override the KMD port so prefund-from-dispenser works from here.
+      KMD_PORT: "7833"
     volumes:
       - .:/opt/app/
       - /opt/app/node_modules
