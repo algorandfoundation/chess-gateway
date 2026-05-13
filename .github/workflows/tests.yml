@@ -64,14 +64,16 @@ jobs:
       - name: Start docker compose stack (vault + pawn)
         run: docker compose up -d --wait
 
+      - name: Ensure pawn container deps are installed (incl. native modules)
+        run: |
+          docker compose exec -T pawn yarn install --frozen-lockfile
+          docker compose exec -T pawn npm rebuild
+
       - name: Initialize Vault (development)
         run: docker compose exec -T pawn yarn vault:development:init
 
       - name: Prefund manager account on LocalNet
         run: ./scripts/fund_manager.sh
 
-        #TODO: Resolve the node modules overriding
-      - name: Re-install dependencies
-        run: yarn
       - name: E2E tests
         run: yarn test:e2e
