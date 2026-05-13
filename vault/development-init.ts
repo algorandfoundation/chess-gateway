@@ -448,13 +448,12 @@ async function getOrCreateKey(transitPath: string, keyName: string, token: strin
   });
   assert(readResponse.status === 200);
 
-  const publicKey = new Address(Buffer.from(response.data.data.keys['1'].public_key, 'base64')).toString();
+  const publicKey = new Address(Buffer.from(readResponse.data.data.keys['1'].public_key, 'base64')).toString();
   // Persist the manager Algorand address so external tooling (e.g. CI) can
   // prefund it from a LocalNet dispenser without having to re-derive it.
   fs.writeFileSync(MANAGER_ADDRESS_FILE, publicKey);
   console.log('Manager public key: \n', publicKey);
   const publicKeyBytes = Buffer.from(readResponse.data.data.keys['1'].public_key, 'base64');
-  const publicKey = new Address(publicKeyBytes).toString();
   console.log(`${keyName} public key (${transitPath}): \n`, publicKey);
 
   return new Uint8Array(publicKeyBytes);
@@ -466,19 +465,6 @@ async function getOrCreateManager(token: string): Promise<Uint8Array> {
 
 async function getOrCreateUser(name: string, token: string): Promise<Uint8Array> {
   return await getOrCreateKey(VAULT_TRANSIT_USERS_PATH, name, token);
-}
-
-// Function to get Vault status
-async function getVaultStatus() {
-  try {
-    const response = await axios.get(`${VAULT_BASE_URL}/v1/sys/health`, {
-      validateStatus: (status) => status < 600,
-    });
-    return response.data;
-  } catch (error) {
-    console.error('Failed to check Vault health:', error);
-    return null;
-  }
 }
 
 // Main function

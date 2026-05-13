@@ -127,6 +127,8 @@ describe('App E2E', () => {
         user_id: user_uid,
         public_address: create_user_response.data.public_address,
         algoBalance: '0', // Initial balance is set to 0
+        did: expect.any(String),
+        wallet_address: null, // No self-custody wallet linked yet
       });
     });
   });

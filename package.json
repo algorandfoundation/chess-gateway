@@ -53,10 +53,10 @@
     "typeorm": "^0.3.28"
   },
   "devDependencies": {
+    "@algorandfoundation/algokit-client-generator": "7.0.0-alpha.5",
     "@nestjs/cli": "^11.0.0",
     "@nestjs/schematics": "^11.0.0",
     "@nestjs/testing": "^11.1.18",
-    "@algorandfoundation/algokit-client-generator": "7.0.0-alpha.5",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.0",
     "@types/jest": "^29.5.2",
