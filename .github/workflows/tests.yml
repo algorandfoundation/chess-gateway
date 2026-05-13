@@ -58,9 +58,6 @@ jobs:
           mkdir -p volumes/vault/file volumes/vault/logs
           chmod -R 777 volumes/vault
 
-      - name: Make workspace writable for pawn container (host-side)
-        run: sudo chown -R 1000:1000 .
-
       - name: Start docker compose stack (vault + pawn)
         run: docker compose up -d --wait
 
