@@ -58,13 +58,11 @@ jobs:
           mkdir -p volumes/vault/file volumes/vault/logs
           chmod -R 777 volumes/vault
 
+      - name: Make workspace writable for pawn container (host-side)
+        run: sudo chown -R 1000:1000 .
+
       - name: Start docker compose stack (vault + pawn)
         run: docker compose up -d --wait
-
-      #  Chown /opt/app inside the container to
-      # `node:node` so the init process can write to the bind mount.
-      - name: Make workspace writable for pawn container
-        run: docker compose exec -T --user root pawn chown -R node:node /opt/app
 
       - name: Initialize Vault (development)
         run: docker compose exec -T pawn yarn vault:development:init
