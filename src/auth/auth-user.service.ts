@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { ConfigService } from '@nestjs/config';
 import { auth } from '../link/auth';
 import { VerificationService } from '../link/verification/verification.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -46,7 +47,20 @@ export class AuthUserService {
   constructor(
     private readonly walletService: WalletService,
     private readonly verificationService: VerificationService,
+    private readonly configService: ConfigService,
   ) {}
+
+  /**
+   * The vault transit key name the manager identity is bound to under
+   * `VAULT_TRANSIT_MANAGERS_PATH`. Defaults to `manager` for the dev
+   * setup, matching `vault/development-init.ts` and
+   * `oid4vc.config.ts`. Surfaced on every `admin` user's row so the
+   * Vault Users list renders them as bound + verified (against the
+   * managers transit path) instead of pending + unbound.
+   */
+  private managerVaultKey(): string {
+    return this.configService.get<string>('VAULT_MANAGER_KEY', 'manager');
+  }
 
   /**
    * Lists every Better-Auth user with the data the manager UI needs
@@ -77,8 +91,47 @@ export class AuthUserService {
       );
     }
 
+    // Manager identity is implicit: any Better-Auth `admin` is bound to
+    // the singleton manager transit key under
+    // `VAULT_TRANSIT_MANAGERS_PATH/keys/<VAULT_MANAGER_KEY>` via the
+    // manager AppRole credentials, not via a `LinkVerification` row.
+    // Resolve its public address once so the admin row(s) render as
+    // bound + verified instead of pending + unbound.
+    const managerVaultKey = this.managerVaultKey();
+    let managerPublicAddress: string | null = null;
+    if (beUsers.some((u) => u.role === 'admin')) {
+      try {
+        managerPublicAddress = await this.walletService.getManagerPublicAddress(vaultToken);
+      } catch (err: any) {
+        this.logger.warn(
+          `listUsers: could not resolve manager public address (${err?.message ?? err}); admin rows will render without it`,
+        );
+      }
+    }
+
     return beUsers.map((u) => {
+      const role = (u.role as AuthUserRole) ?? 'user';
       const v = verificationByUserId.get(u.id);
+
+      // Admins are bound to the managers transit path (not the users
+      // path), and verification for them is implicit — the manager
+      // AppRole is what we trust, not a per-user device attestation.
+      if (role === 'admin') {
+        return {
+          userId: u.id,
+          email: u.email,
+          name: u.name,
+          role,
+          vaultUserId: managerVaultKey,
+          publicAddress: managerPublicAddress,
+          isVerified: true,
+          walletAddress: v?.walletAddress ?? null,
+          associatedAt: v?.associatedAt ? new Date(v.associatedAt).toISOString() : null,
+          createdAt: u.createdAt ? new Date(u.createdAt).toISOString() : null,
+          updatedAt: u.updatedAt ? new Date(u.updatedAt).toISOString() : null,
+        };
+      }
+
       // Only surface a vaultUserId / publicAddress once the user is
       // actually bound to a vault transit key (manager provisioning
       // via POST /auth/user). Self-signups remain unbound until a
@@ -88,7 +141,7 @@ export class AuthUserService {
         userId: u.id,
         email: u.email,
         name: u.name,
-        role: (u.role as AuthUserRole) ?? 'user',
+        role,
         vaultUserId,
         publicAddress: vaultUserId
           ? publicAddressByVaultId.get(vaultUserId) ?? null
@@ -121,17 +174,49 @@ export class AuthUserService {
     }
 
     const v = await this.verificationService.findByUserId(userId);
+    const role: AuthUserRole = (u.role as AuthUserRole) ?? 'user';
+
+    // Admins are bound to the managers transit path; mirror the
+    // listUsers special-case so the detail view matches the listing.
+    if (role === 'admin') {
+      let publicAddress: string | null = null;
+      try {
+        publicAddress = await this.walletService.getManagerPublicAddress(vaultToken);
+      } catch (err: any) {
+        this.logger.warn(
+          `getUser ${userId}: could not resolve manager public address (${err?.message ?? err})`,
+        );
+      }
+      return {
+        userId: u.id,
+        email: u.email,
+        name: u.name,
+        role,
+        vaultUserId: this.managerVaultKey(),
+        publicAddress,
+        isVerified: true,
+        walletAddress: v?.walletAddress ?? null,
+        associatedAt: v?.associatedAt ? new Date(v.associatedAt).toISOString() : null,
+        createdAt: u.createdAt ? new Date(u.createdAt).toISOString() : null,
+        updatedAt: u.updatedAt ? new Date(u.updatedAt).toISOString() : null,
+      };
+    }
+
     // Only surface a vaultUserId / publicAddress once the user is
     // actually bound to a vault transit key (manager provisioning).
+    // Resolve the single key directly so user-scoped vault tokens (which
+    // are NOT granted `list` capability on `<users-path>/keys`) can still
+    // see their own bound `publicAddress` — using `getKeys` here would
+    // 403 under a user policy and incorrectly leave the dashboard in
+    // "Awaiting Vault Provisioning" state.
     const vaultUserId = v?.id ?? null;
     let publicAddress: string | null = null;
     if (vaultUserId) {
       try {
-        const keys = await this.walletService.getKeys(vaultToken);
-        publicAddress = keys.find((k) => k.user_id === vaultUserId)?.public_address ?? null;
+        publicAddress = await this.walletService.getUserPublicAddress(vaultUserId, vaultToken);
       } catch (err: any) {
         this.logger.warn(
-          `getUser ${userId}: could not fetch vault keys (${err?.message ?? err})`,
+          `getUser ${userId}: could not resolve vault public address for ${vaultUserId} (${err?.message ?? err})`,
         );
       }
     }
@@ -140,7 +225,7 @@ export class AuthUserService {
       userId: u.id,
       email: u.email,
       name: u.name,
-      role: (u.role as AuthUserRole) ?? 'user',
+      role,
       vaultUserId,
       publicAddress,
       isVerified: v?.isVerified ?? false,

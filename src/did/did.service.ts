@@ -361,6 +361,34 @@ export class DidService {
   }
 
   /**
+   * Publish the manager's own DID document so the manager can serve as a
+   * proper issuer DID. The "user id" used for the cache row (and the
+   * subject public key) is the configured `VAULT_MANAGER_KEY` (defaults
+   * to `manager`), and the public key comes from the singleton manager
+   * transit key under `VAULT_TRANSIT_MANAGERS_PATH`. The publish is
+   * signed by the same manager key, so the issuer DID's controller and
+   * verification method are one and the same — exactly what we want for
+   * an OID4VC issuer.
+   *
+   * Mirrors `publishForUser` so the controller layer can stay thin: a
+   * `POST /v1/did/manager` route simply forwards the manager's vault
+   * token and we do the rest.
+   */
+  async publishForManager(
+    vaultToken: string,
+    options: { force?: boolean } = {},
+  ): Promise<PublishedDidInfo> {
+    const managerKey = this.configService.get<string>('VAULT_MANAGER_KEY', 'manager');
+    const publicKey: Buffer = await this.vaultService.getManagerPublicKey(vaultToken);
+    return this.publishUserDid({
+      userId: managerKey,
+      publicKey: new Uint8Array(publicKey),
+      vaultToken,
+      force: options.force,
+    });
+  }
+
+  /**
    * Re-publish the user's DID document after the wallet's device manifest
    * has changed: bumps the on-chain `DeviceManifestAnchor` service entry
    * and promotes any wallet-managed subkeys (HD-derived account keys,

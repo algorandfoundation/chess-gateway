@@ -2,6 +2,7 @@ import 'dotenv/config';
 import * as fs from 'fs';
 import axios from 'axios';
 import assert from 'assert';
+import { randomBytes } from 'crypto';
 import SQLite from 'better-sqlite3';
 import * as path from 'path';
 import { Address } from '@algorandfoundation/algokit-utils';
@@ -13,6 +14,7 @@ import { VaultService } from '../src/vault/vault.service';
 import { ChainService } from '../src/chain/chain.service';
 import { buildVaultTransactionSigner } from '../src/did/vault-signer';
 import { updateEnvFile } from '../libs/env';
+import { auth } from '../src/link/auth';
 
 // Constants
 const VAULT_BASE_URL = process.env.VAULT_BASE_URL || 'http://vault:8200';
@@ -134,13 +136,20 @@ async function createACLPolicies(token: string) {
       path: {
         // USER
         // -------
-        // 1) allow /keys/* path
-        // 2) but exclude config paths like /keys/*/config
+        // 1) allow /keys/* path (including delete so managers can permanently
+        //    remove a user's transit key once it has been pre-flagged as
+        //    `deletion_allowed=true` via the /config sub-path)
+        // 2) deny any other /keys/<name>/<sub> sub-path by default
+        // 3) but explicitly re-allow /keys/+/config so a manager can flip
+        //    `deletion_allowed` before issuing the DELETE
         [`${VAULT_TRANSIT_USERS_PATH}/keys/*`]: {
-          capabilities: ['create', 'read', 'update'],
+          capabilities: ['create', 'read', 'update', 'delete'],
         },
         [`${VAULT_TRANSIT_USERS_PATH}/keys/+/+`]: {
           capabilities: ['deny'],
+        },
+        [`${VAULT_TRANSIT_USERS_PATH}/keys/+/config`]: {
+          capabilities: ['create', 'read', 'update'],
         },
       },
     },
@@ -151,10 +160,13 @@ async function createACLPolicies(token: string) {
         // 1) allow /keys/* path
         // 2) but exclude config paths like /keys/*/config
         [`${VAULT_TRANSIT_MANAGERS_PATH}/keys/*`]: {
-          capabilities: ['create', 'read', 'update'],
+          capabilities: ['create', 'read', 'update', 'delete'],
         },
         [`${VAULT_TRANSIT_MANAGERS_PATH}/keys/+/+`]: {
           capabilities: ['deny'],
+        },
+        [`${VAULT_TRANSIT_MANAGERS_PATH}/keys/+/config`]: {
+          capabilities: ['create', 'read', 'update'],
         },
         // 3 allow /sign path
         [`${VAULT_TRANSIT_MANAGERS_PATH}/sign/*`]: {
@@ -163,13 +175,19 @@ async function createACLPolicies(token: string) {
 
         // USER
         // -------
-        // 1) allow /keys/* path
-        // 2) but exclude config paths like /keys/*/config
+        // 1) allow /keys/* path (delete included so the manager can
+        //    permanently remove a user's transit key after flipping
+        //    `deletion_allowed=true` via the /config sub-path)
+        // 2) deny other /keys/<name>/<sub> sub-paths
+        // 3) but re-allow /keys/+/config so the deletion toggle is permitted
         [`${VAULT_TRANSIT_USERS_PATH}/keys/*`]: {
-          capabilities: ['create', 'read', 'update'],
+          capabilities: ['create', 'read', 'update', 'delete'],
         },
         [`${VAULT_TRANSIT_USERS_PATH}/keys/+/+`]: {
           capabilities: ['deny'],
+        },
+        [`${VAULT_TRANSIT_USERS_PATH}/keys/+/config`]: {
+          capabilities: ['create', 'read', 'update'],
         },
         // 3) allow list users
         [`${VAULT_TRANSIT_USERS_PATH}/keys`]: {
@@ -498,17 +516,30 @@ async function main() {
     sealKeys.root_token,
     OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE,
   );
-  // Mirror the role/secret into the project `.env` so the Nest agent picks
-  // them up on the very next boot without an extra manual step.
-  try {
-    const oid4vcCreds = JSON.parse(fs.readFileSync(OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE).toString()) as {
-      role_id: string;
-      secret_id: string;
-    };
-    updateEnvFile('OID4VC_VAULT_ROLE_ID', oid4vcCreds.role_id);
-    updateEnvFile('OID4VC_VAULT_SECRET_ID', oid4vcCreds.secret_id);
-  } catch (err) {
-    console.warn(`Could not propagate OID4VC AppRole credentials to .env: ${(err as Error).message}`);
+  // Mirror the role/secret IDs into the project `.env` so the Nest agent
+  // (and CLI scripts like `scripts/deploy-did-algo.ts`) pick them up on
+  // the very next boot without an extra manual step. The env var names
+  // mirror those produced by the bootstrap UI (`src/lib/bootstrap-server.ts`)
+  // and consumed by `HealthService.VAULT_REQUIRED_ENV`:
+  //   - manager AppRole  -> VAULT_ROLE_ID         / VAULT_SECRET_ID
+  //   - user    AppRole  -> USER_VAULT_ROLE_ID    / USER_VAULT_SECRET_ID
+  //   - oid4vc  AppRole  -> OID4VC_VAULT_ROLE_ID  / OID4VC_VAULT_SECRET_ID
+  const envPropagations: { label: string; file: string; rolePrefix: string }[] = [
+    { label: 'manager', file: MANAGERS_ROLE_AND_SECRET_KEYS_FILE, rolePrefix: 'VAULT' },
+    { label: 'user', file: USERS_ROLE_AND_SECRET_KEYS_FILE, rolePrefix: 'USER_VAULT' },
+    { label: 'OID4VC', file: OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE, rolePrefix: 'OID4VC_VAULT' },
+  ];
+  for (const { label, file, rolePrefix } of envPropagations) {
+    try {
+      const creds = JSON.parse(fs.readFileSync(file).toString()) as {
+        role_id: string;
+        secret_id: string;
+      };
+      updateEnvFile(`${rolePrefix}_ROLE_ID`, creds.role_id);
+      updateEnvFile(`${rolePrefix}_SECRET_ID`, creds.secret_id);
+    } catch (err) {
+      console.warn(`Could not propagate ${label} AppRole credentials to .env: ${(err as Error).message}`);
+    }
   }
 
   console.log('\n\n\nMANAGER ALGORAND PUBLIC ADDRESS\n------');
@@ -600,6 +631,16 @@ async function main() {
   console.log('Alice registered in database (no DID)');
   db.close();
 
+  // Manager Better-Auth user. Seeded as a one-shot manual provisioning
+  // step: we deliberately do NOT write a `LinkVerification` row for the
+  // manager because the manager identity is known ahead of time and is
+  // bound to the singleton `pawn/managers/manager` transit key via the
+  // manager AppRole credentials propagated to `.env` above
+  // (`VAULT_ROLE_ID` / `VAULT_SECRET_ID`). Operators may later amend
+  // the seeded record (email, name, additional managers) via
+  // `PUT /v1/auth/user/:userId`.
+  await seedManagerBetterAuthUser();
+
   // Bob: publish a DID via the live API, mirroring how a real client would.
   // The pawn container runs both this init script and the API on the same
   // host, so we hit `API_BASE_URL` (defaults to http://localhost:3000) using
@@ -614,11 +655,44 @@ async function main() {
   console.log(`\nLogging into API to publish DID for Bob via ${API_BASE_URL}...`);
   const apiVaultToken = await vaultApproleLogin(managerCreds);
   const accessToken = await apiSignIn(apiVaultToken);
+
+  // Publish (or confirm) the manager's own issuer DID document before
+  // anything else uses the manager identity downstream. This is the
+  // verification step the previous init flow was missing — without it
+  // the manager UI rendered the admin row as Pending/unbound because
+  // there was no on-chain DID + cached record for the manager key.
+  // Idempotent: a 409 from the gateway means the doc is already on
+  // chain and we treat it as PASS.
+  await publishManagerDidViaApi(accessToken);
+
   const bobInfo = await createUserViaApi(accessToken, 'bob');
   console.log(`Bob created via API. did=${bobInfo?.did ?? 'null'} address=${bobInfo?.public_address ?? 'n/a'}`);
   if (!bobInfo?.did) {
     throw new Error(`Expected DID for Bob in API response, got: ${JSON.stringify(bobInfo)}`);
   }
+}
+
+async function publishManagerDidViaApi(accessToken: string): Promise<void> {
+  const response = await axios.post(
+    `${API_BASE_URL}/v1/did/manager`,
+    {},
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      validateStatus: (s) => s < 600,
+    },
+  );
+  if (response.status >= 200 && response.status < 300) {
+    const did = response.data?.did ?? '?';
+    console.log(`Published manager issuer DID: ${did}`);
+    return;
+  }
+  if (response.status === 409) {
+    console.log('PASS: Manager DID document already published on chain.');
+    return;
+  }
+  throw new Error(
+    `Failed to publish manager DID (status=${response.status}): ${JSON.stringify(response.data)}`,
+  );
 }
 
 async function vaultApproleLogin(creds: { role_id: string; secret_id: string }): Promise<string> {
@@ -661,6 +735,63 @@ async function waitForApi(baseUrl: string, attempts = 60, delayMs = 1000): Promi
     }
   }
   throw new Error(`API at ${baseUrl} did not become reachable after ${attempts} attempts`);
+}
+
+// Idempotent provisioning of the Better-Auth manager user.
+//
+// Looks up the row by `MANAGER_EMAIL` (defaults to `manager@example.com`
+// for the dev setup). When the row exists we only promote its `role` to
+// `admin` if it isn't already; when it doesn't we create it via the
+// Better-Auth admin API with a throwaway password (sign-in is
+// passwordless: OTP / passkey / SSO). No `LinkVerification` row is
+// written — the manager identity is implicit in the `admin` role plus
+// the manager AppRole credentials the gateway loads from `.env`. The
+// session itself ferries a manager-scoped `vault_token` (minted by
+// `POST /v1/auth/manager/token`) so the global JWT `AuthGuard` lets
+// the manager through without a Bearer JWT (see `auth.guard.ts`).
+async function seedManagerBetterAuthUser(): Promise<void> {
+  const email = (process.env.MANAGER_EMAIL ?? '').trim() || 'manager@example.com';
+  const name = (process.env.MANAGER_NAME ?? '').trim() || 'Manager';
+
+  const ctx: any = await (auth as any).$context;
+  const adapter = ctx.adapter;
+
+  const existing = await adapter.findOne({
+    model: 'user',
+    where: [{ field: 'email', value: email }],
+  });
+
+  if (existing) {
+    if (existing.role === 'admin') {
+      console.log(`PASS: Better-Auth manager user already seeded (${email}, id=${existing.id})`);
+      return;
+    }
+    await adapter.update({
+      model: 'user',
+      where: [{ field: 'id', value: existing.id }],
+      update: { role: 'admin' },
+    });
+    console.log(`Promoted Better-Auth user ${email} (id=${existing.id}) to role=admin`);
+    return;
+  }
+
+  // Better-Auth requires a password column even though sign-in is
+  // passwordless, mirroring `AuthUserService.createUser`.
+  const throwawayPassword = randomBytes(32).toString('base64url');
+  try {
+    const created: any = await (auth as any).api.createUser({
+      body: {
+        email,
+        name,
+        password: throwawayPassword,
+        role: 'admin',
+      },
+    });
+    const beUser = created?.user ?? created;
+    console.log(`Seeded Better-Auth manager user: id=${beUser?.id ?? '?'} email=${email}`);
+  } catch (err: any) {
+    console.warn(`Could not seed Better-Auth manager user (${email}): ${err?.message ?? err}`);
+  }
 }
 
 // Run main function

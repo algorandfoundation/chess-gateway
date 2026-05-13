@@ -4,5 +4,5 @@ import { auth } from './auth';
 type BaseUserSession = UserSession<typeof auth>;
 
 export type LinkSession = Omit<BaseUserSession, 'session'> & {
-  session: BaseUserSession['session'] & { challenge?: string };
+  session: BaseUserSession['session'] & { challenge?: string; vaultToken?: string };
 };

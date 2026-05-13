@@ -46,6 +46,90 @@ export const auth = betterAuth({
         required: false,
         input: false,
       },
+      // Manager-scoped Vault token minted automatically by the
+      // `databaseHooks.session.create.before` hook below whenever an
+      // `admin` Better-Auth session is being created. When present on
+      // a session it lets the global JWT `AuthGuard` authorise the
+      // request without a Bearer JWT — the guard pulls `vaultToken`
+      // off the session and treats it as the caller's vault token.
+      // `input: false` so clients can't set it themselves.
+      vaultToken: {
+        type: 'string',
+        required: false,
+        input: false,
+      },
+    },
+  },
+  // Better-Auth lifecycle hook: every time a session is about to be
+  // persisted, look up the owning user and — if they're an `admin` —
+  // perform an AppRole login against Vault using the manager
+  // credentials in `VAULT_ROLE_ID` / `VAULT_SECRET_ID` (propagated by
+  // `vault/development-init.ts`) and stash the resulting `vault_token`
+  // on the session row as `vaultToken`. The AppRole secret never
+  // leaves the gateway; only sessions belonging to an `admin`
+  // Better-Auth user (the manager is seeded with `role: 'admin'` —
+  // see `seedManagerBetterAuthUser` in `vault/development-init.ts`)
+  // ever pick up a token. The token then rides along on the session
+  // for subsequent requests; see `src/auth/auth.guard.ts` for the
+  // matching pickup logic.
+  databaseHooks: {
+    session: {
+      create: {
+        before: async (session) => {
+          const userId = (session as { userId?: string }).userId;
+          if (!userId) return;
+          try {
+            // The `auth` instance isn't fully constructed yet inside
+            // this hook closure; reach back into the live context to
+            // get the adapter the same way `AuthService` does.
+            const ctx: any = await (auth as any).$context;
+            const user = await ctx.adapter.findOne({
+              model: 'user',
+              where: [{ field: 'id', value: userId }],
+            });
+            if (!user) return;
+
+            // Admin sessions get a manager-scoped vault token from the
+            // manager AppRole; every other Better-Auth user gets a
+            // user-scoped vault token from the dedicated users AppRole.
+            // Both AppRole secrets stay on the server; only the issued
+            // `client_token` rides on the session row.
+            const isAdmin = (user as { role?: string }).role === 'admin';
+            const roleId = isAdmin
+              ? process.env.VAULT_ROLE_ID?.trim()
+              : process.env.USER_VAULT_ROLE_ID?.trim();
+            const secretId = isAdmin
+              ? process.env.VAULT_SECRET_ID?.trim()
+              : process.env.USER_VAULT_SECRET_ID?.trim();
+            const vaultBaseUrl = process.env.VAULT_BASE_URL?.trim();
+            const scopeLabel = isAdmin ? 'manager' : 'user';
+            if (!roleId || !secretId || !vaultBaseUrl) {
+              console.warn(
+                `[Auth] ${scopeLabel} session created but AppRole credentials / VAULT_BASE_URL not configured — skipping ${scopeLabel} vault token mint.`,
+              );
+              return;
+            }
+            const res = await fetch(`${vaultBaseUrl}/v1/auth/approle/login`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ role_id: roleId, secret_id: secretId }),
+            });
+            if (!res.ok) {
+              console.warn(
+                `[Auth] ${scopeLabel} AppRole login failed (${res.status}) — session will not carry a vault token.`,
+              );
+              return;
+            }
+            const body = (await res.json()) as { auth?: { client_token?: string } };
+            const vaultToken = body?.auth?.client_token;
+            if (!vaultToken) return;
+            return { data: { ...session, vaultToken } };
+          } catch (err) {
+            console.warn('[Auth] Failed to mint vault token on session create:', err);
+            return;
+          }
+        },
+      },
     },
   },
   socialProviders: googleEnabled
@@ -64,11 +148,18 @@ export const auth = betterAuth({
       expiresIn: 3600,
       storeOTP: 'plain',
     }),
-    // Admin plugin gives us role-based access (`user` / `manager` /
-    // `admin`) plus the impersonation endpoints the manager UI uses
-    // to act on behalf of an Intermezzo user. The default `admin` role
-    // remains the highest privilege; `manager` is added so vault-
-    // managers can be promoted without granting full admin powers.
+    // Admin plugin gives us role-based access (`user` / `admin`) plus
+    // the impersonation endpoints the manager UI uses to act on behalf
+    // of an Intermezzo user. The manager is just an `admin` Better-Auth
+    // user seeded at init time — see `seedManagerBetterAuthUser` in
+    // `vault/development-init.ts`. The binding to `pawn/managers/manager`
+    // is implicit via the manager AppRole credentials in `.env`
+    // (`VAULT_ROLE_ID` / `VAULT_SECRET_ID`); whenever an `admin` session
+    // is created the `databaseHooks.session.create.before` hook above
+    // exchanges those AppRole credentials for a manager-scoped
+    // `vault_token` and stashes it on the session row so subsequent
+    // calls authenticate via the session cookie alone (see
+    // `src/auth/auth.guard.ts`).
     admin({
       defaultRole: 'user',
       adminRoles: ['admin'],

@@ -61,6 +61,31 @@ export class WalletService {
     };
   }
 
+  /**
+   * Lean read-only helper: returns the base32-encoded Algorand address of
+   * the manager key without going to algod for balances or asset
+   * holdings. Used by `AuthUserService` to surface the manager binding
+   * on the admin row of the Vault Users list without paying the cost of
+   * `getManagerInfo`.
+   */
+  async getManagerPublicAddress(vault_token: string): Promise<string> {
+    const public_key = await this.vaultService.getManagerPublicKey(vault_token);
+    return new Address(public_key).toString();
+  }
+
+  /**
+   * Lean read-only helper: returns the base32-encoded Algorand address of
+   * a single user's transit key. Used by `AuthUserService.getUser` so
+   * that a user-scoped vault token (which is not granted the `list`
+   * capability on `<users-path>/keys`) can still surface the bound
+   * `publicAddress` without falling back to the broader `getKeys` listing
+   * that requires manager-grade capabilities.
+   */
+  async getUserPublicAddress(vault_user_id: string, vault_token: string): Promise<string> {
+    const public_key = await this.vaultService.getUserPublicKey(vault_user_id, vault_token);
+    return new Address(public_key).toString();
+  }
+
   async getManagerInfo(vault_token: string): Promise<ManagerDetailDto> {
     const public_address = await this.vaultService.getManagerPublicKey(vault_token);
     // asset holdings

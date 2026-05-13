@@ -4,6 +4,8 @@ import { IS_PUBLIC_KEY } from './constants';
 import { Request } from 'express';
 import { Reflector } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
+import { fromNodeHeaders } from 'better-auth/node';
+import { auth } from '../link/auth';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -22,20 +24,49 @@ export class AuthGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest();
+    const request = context.switchToHttp().getRequest<Request>();
+
+    // Preferred path: a gateway-issued Bearer JWT carrying a vault
+    // token (machine/service callers, plus humans who explicitly
+    // exchanged a vault token via `POST /auth/token`).
     const token = this.extractTokenFromHeader(request);
-    if (!token) {
-      throw new UnauthorizedException();
+    if (token) {
+      try {
+        const payload = await this.jwtService.verifyAsync(token, {
+          secret: this.configService.get<string>('JWT_SECRET'),
+        });
+        (request as any)['vault_token'] = payload.vault_token;
+        return true;
+      } catch {
+        // Fall through to the Better-Auth session check below — a
+        // human manager logging in via OTP will arrive here without
+        // a Bearer JWT but with a Better-Auth session cookie.
+      }
     }
+
+    // Fallback path: a Better-Auth session whose `vaultToken` field
+    // has been populated by the `databaseHooks.session.create.before`
+    // hook in `src/link/auth.ts`. Admin sessions carry a
+    // manager-scoped token minted from `VAULT_ROLE_ID` /
+    // `VAULT_SECRET_ID`; regular user sessions carry a user-scoped
+    // token minted from `USER_VAULT_ROLE_ID` /
+    // `USER_VAULT_SECRET_ID`. In both cases the AppRole secret never
+    // leaves the gateway; only the issued `client_token` rides on
+    // the session row.
     try {
-      const payload = await this.jwtService.verifyAsync(token, {
-        secret: this.configService.get<string>('JWT_SECRET'),
+      const session = await auth.api.getSession({
+        headers: fromNodeHeaders(request.headers),
       });
-      request['vault_token'] = payload.vault_token;
+      const vaultToken = (session?.session as { vaultToken?: string } | undefined)?.vaultToken;
+      if (session && vaultToken) {
+        (request as any)['vault_token'] = vaultToken;
+        return true;
+      }
     } catch {
-      throw new UnauthorizedException();
+      // Treat any session lookup failure as unauthenticated.
     }
-    return true;
+
+    throw new UnauthorizedException();
   }
 
   private extractTokenFromHeader(request: Request): string | undefined {

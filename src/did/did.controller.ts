@@ -99,6 +99,54 @@ export class DidController {
   }
 
   /**
+   * Publish (or force-republish) the manager's own DID document. The
+   * resulting DID is anchored against the singleton manager transit key
+   * (`VAULT_TRANSIT_MANAGERS_PATH/keys/VAULT_MANAGER_KEY`) so the issuer
+   * DID's controller and verification method are the same key the
+   * manager uses to sign every other on-chain transaction.
+   *
+   * Idempotent over the on-chain doc: returns 409 if a document already
+   * exists for the manager unless `force=true` is passed, mirroring the
+   * `/users/:user_id` semantics. The init script treats 409 as a
+   * "manager DID already published" pass.
+   */
+  @Post('manager')
+  @ApiOperation({
+    summary: "Publish (or force-republish) the manager's issuer DID document",
+    description:
+      "Resolves the manager public key from Vault, builds a W3C DID document anchored at the configured `VAULT_MANAGER_KEY`, and publishes it on the `did:algo` registry signed by the manager key itself. Returns 409 if a manager DID document already exists on chain unless `force=true` is passed.",
+  })
+  @ApiQuery({
+    name: 'force',
+    required: false,
+    type: Boolean,
+    description:
+      'When true, delete the existing on-chain manager DID document (reclaiming the box MBR) and then publish a fresh one. When false or omitted, the request fails with 409 if a document already exists.',
+  })
+  @ApiCreatedResponse({ description: 'Publication attempted.', type: DidPublishResponseDto })
+  @ApiConflictResponse({
+    description: 'A manager DID document already exists on chain; pass `force=true` to republish.',
+  })
+  async publishManager(
+    @Request() request: any,
+    @Query('force', new ParseBoolPipe({ optional: true })) force?: boolean,
+  ): Promise<DidPublishResponseDto> {
+    try {
+      const result = await this.didService.publishForManager(request.vault_token, { force });
+      return {
+        did: result.did,
+        document: result.document,
+        txIds: result.txIds,
+      };
+    } catch (err) {
+      if (err instanceof DidAlreadyPublishedError) {
+        throw new ConflictException(err.message);
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Returns the locally cached DID document and publication state for a user.
    * Returns 404 if no record exists; consumers should then fall back to the
    * universal resolver.
