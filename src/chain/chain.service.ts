@@ -38,7 +38,7 @@ export class ChainService {
   constructor(
     private readonly configService: ConfigService,
     private readonly httpService: HttpService,
-  ) {}
+  ) { }
 
   private parseLease(lease: string): Uint8Array {
     return new Uint8Array(Buffer.from(lease, 'base64'));
@@ -117,6 +117,7 @@ export class ChainService {
     to: string,
     amount: number,
     suggested_params?: TruncatedSuggestedParamsResponse,
+    fee?: number,
   ): Promise<Uint8Array> {
     suggested_params = suggested_params ? suggested_params : await this.getSuggestedParams();
 
@@ -129,7 +130,7 @@ export class ChainService {
       type: TransactionType.Payment,
       payment: pay,
       sender: Address.fromString(from),
-      fee: BigInt(suggested_params.minFee),
+      fee: BigInt(fee ?? suggested_params.minFee),
       firstValid: suggested_params.lastRound,
       lastValid: suggested_params.lastRound + 1000n,
       genesisHash: Uint8Array.from(Buffer.from(this.configService.get<string>('GENESIS_HASH'), 'base64')),
@@ -147,6 +148,7 @@ export class ChainService {
     lease?: string,
     note?: string,
     suggested_params?: TruncatedSuggestedParamsResponse,
+    fee?: number,
   ): Promise<Uint8Array> {
     suggested_params = suggested_params ? suggested_params : await this.getSuggestedParams();
 
@@ -160,7 +162,7 @@ export class ChainService {
       type: TransactionType.AssetTransfer,
       assetTransfer: assetTransfer,
       sender: Address.fromString(from),
-      fee: BigInt(suggested_params.minFee),
+      fee: BigInt(fee ?? suggested_params.minFee),
       firstValid: suggested_params.lastRound,
       lastValid: suggested_params.lastRound + 1000n,
       genesisHash: Uint8Array.from(Buffer.from(this.configService.get<string>('GENESIS_HASH'), 'base64')),
