@@ -1,5 +1,5 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsObject, IsOptional, IsString } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+import { IsObject } from 'class-validator';
 
 export class CreatePresentationRequestDto {
   @ApiProperty({
@@ -8,10 +8,10 @@ export class CreatePresentationRequestDto {
       id: 'rewards-eligibility',
       input_descriptors: [
         {
-          id: 'credential-sd-jwt',
+          id: 'device-attestation-credential',
           format: { 'vc+sd-jwt': { 'sd-jwt_alg_values': ['EdDSA'] } },
           constraints: {
-            fields: [{ path: ['$.vct'], filter: { type: 'string', const: 'credential-sd-jwt' } }],
+            fields: [{ path: ['$.vct'], filter: { type: 'string', const: 'device-attestation-credential' } }],
           },
         },
       ],
@@ -19,13 +19,6 @@ export class CreatePresentationRequestDto {
   })
   @IsObject()
   presentationDefinition!: Record<string, unknown>;
-
-  @ApiPropertyOptional({
-    description: 'Application user the verification is created for. Stored on the verification session.',
-  })
-  @IsOptional()
-  @IsString()
-  userId?: string;
 }
 
 export class PresentationRequestResponseDto {

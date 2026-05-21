@@ -47,13 +47,19 @@ describe('Wallet Controller', () => {
         user_id: userId,
         public_address: expectedPublicAddress,
         algoBalance: expectedAmount,
+        wallet_address: null,
       });
       const requestMock = { vault_token: vaultToken };
 
       const result = await walletController.userDetail(requestMock, userId);
 
       expect(mockWalletService.getUserInfo).toHaveBeenCalledWith(userId, vaultToken);
-      expect(result).toEqual({ user_id: userId, public_address: expectedPublicAddress, algoBalance: expectedAmount });
+      expect(result).toEqual({
+        user_id: userId,
+        public_address: expectedPublicAddress,
+        algoBalance: expectedAmount,
+        wallet_address: null,
+      });
     });
 
     it('\(OK) create user', async () => {
@@ -65,6 +71,7 @@ describe('Wallet Controller', () => {
         user_id: userId,
         public_address: expectedPublicAddress,
         algoBalance: '0',
+        wallet_address: null,
       });
 
       const result: UserInfoResponseDto = await walletController.userCreate(
@@ -124,6 +131,7 @@ describe('Wallet Controller', () => {
         user_id: userId,
         public_address: expectedPublicAddress,
         algoBalance: algoBalanceExpected,
+        wallet_address: null,
       });
       const result = await walletController.assetsBalances(requestMock, userId);
       expect(mockWalletService.getAssetHoldings).toHaveBeenCalledWith(userId, vaultToken);

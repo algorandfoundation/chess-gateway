@@ -6,11 +6,11 @@ import { VaultModule } from '../vault/vault.module';
 import { ChainModule } from '../chain/chain.module';
 import { ConfigModule } from '@nestjs/config';
 import { DidModule } from '../did/did.module';
-import { VerificationModule } from '../link/verification/verification.module';
-
+import { Oid4vcModule } from '../oid4vc/oid4vc.module';
 @Module({
-  imports: [HttpModule, VaultModule, ChainModule, ConfigModule, DidModule, VerificationModule],
+  imports: [HttpModule, VaultModule, ChainModule, ConfigModule, DidModule, Oid4vcModule],
   controllers: [Wallet],
   providers: [WalletService],
+  exports: [WalletService],
 })
 export class WalletModule {}

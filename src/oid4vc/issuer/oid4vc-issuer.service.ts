@@ -1,51 +1,23 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Oid4vcIssuanceSessionRepository } from '../sessions/vault-repository';
 
-import { ClaimFormat, JwaSignatureAlgorithm, W3cCredential, W3cIssuer, w3cDate } from '@credo-ts/core';
+import { ClaimFormat, W3cCredential, W3cIssuer, w3cDate } from '@credo-ts/core';
 import {
-  OpenId4VciCredentialConfigurationsSupported,
   OpenId4VciCredentialFormatProfile,
   OpenId4VciCredentialRequestToCredentialMapper,
   OpenId4VciSignCredential,
+  OpenId4VciCredentialConfigurationsSupported,
 } from '@credo-ts/openid4vc';
 
 import { Oid4vcAgentProvider } from '../agent/oid4vc-agent.provider';
 import { Oid4vcConfig } from '../oid4vc.config';
 import { Oid4vcIssuanceSession } from '../entities/oid4vc-issuance-session.entity';
+import { SetCredentialConfigurationDto } from '../dto/credential-configuration.dto';
+import { DEFAULT_CREDENTIAL_CONFIGURATIONS, CREDENTIAL_CONFIGURATIONS_KV_FOLDER } from './credential-configurations';
+import { VaultService } from '../../vault/vault.service';
+import { AlgoVaultTokenProvider } from '../algo/algo-vault-token.provider';
 
-/**
- * Default credential configurations exposed by this issuer.
- *
- * Two profiles are advertised so wallets can pick whichever they support:
- * - `credential-sd-jwt` → IETF SD-JWT VC (recommended, used by HAIP)
- * - `credential-jwt-vc` → W3C JWT VC
- *
- * The shape of these configurations is intentionally minimal - production
- * deployments should extend them with proper `display`, `claims`, and
- * `cryptographic_binding_methods_supported` based on the wallet ecosystem.
- */
-export const DEFAULT_CREDENTIAL_CONFIGURATIONS: OpenId4VciCredentialConfigurationsSupported = {
-  'credential-sd-jwt': {
-    format: OpenId4VciCredentialFormatProfile.SdJwtVc,
-    vct: 'credential-sd-jwt',
-    // `did:algo` is the only DID-based binding we accept — every actor on
-    // the platform (issuer + holder) has an on-chain Algorand identifier,
-    // and we will not bind a credential to an unrelated `did:key`.
-    cryptographic_binding_methods_supported: ['did:algo'],
-    credential_signing_alg_values_supported: [JwaSignatureAlgorithm.EdDSA],
-    scope: 'credential_sd_jwt',
-  },
-  'credential-jwt-vc': {
-    format: OpenId4VciCredentialFormatProfile.JwtVcJson,
-    cryptographic_binding_methods_supported: ['did:algo'],
-    credential_signing_alg_values_supported: [JwaSignatureAlgorithm.EdDSA],
-    credential_definition: {
-      type: ['VerifiableCredential', 'CredentialJwtVc'],
-    },
-    scope: 'credential_jwt_vc',
-  },
-};
+export { DEFAULT_CREDENTIAL_CONFIGURATIONS };
 
 /**
  * Encapsulates the OID4VCI side of the agent: registers the singleton issuer
@@ -67,8 +39,9 @@ export class Oid4vcIssuerService implements OnModuleInit {
   constructor(
     private readonly agentProvider: Oid4vcAgentProvider,
     private readonly config: Oid4vcConfig,
-    @InjectRepository(Oid4vcIssuanceSession)
-    private readonly sessionRepo: Repository<Oid4vcIssuanceSession>,
+    private readonly sessionRepo: Oid4vcIssuanceSessionRepository,
+    private readonly vaultService: VaultService,
+    private readonly tokenProvider: AlgoVaultTokenProvider,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -91,6 +64,7 @@ export class Oid4vcIssuerService implements OnModuleInit {
    */
   async ensureIssuer() {
     const agent = await this.agentProvider.getAgent();
+    const configurations = await this.getCredentialConfigurations();
     let record;
     try {
       record = await agent.modules.openId4VcIssuer.getIssuerByIssuerId(Oid4vcIssuerService.ISSUER_ID);
@@ -99,60 +73,129 @@ export class Oid4vcIssuerService implements OnModuleInit {
       return agent.modules.openId4VcIssuer.createIssuer({
         issuerId: Oid4vcIssuerService.ISSUER_ID,
         display: [{ name: this.config.issuerDisplayName }],
-        credentialConfigurationsSupported: DEFAULT_CREDENTIAL_CONFIGURATIONS,
+        credentialConfigurationsSupported: configurations,
       });
     }
 
     // The issuer record persists `credentialConfigurationsSupported` in Askar,
     // so a record created with stale configurations (e.g. before a rename or
     // a format change) keeps serving the old metadata until we explicitly
-    // refresh it. Detect drift between the record and the in-code default and
+    // refresh it. Detect drift between the record and the current set and
     // push an update so `createCredentialOffer` accepts the current ids.
     const persisted = (record as { credentialConfigurationsSupported?: Record<string, unknown> })
       .credentialConfigurationsSupported;
-    if (this.hasConfigurationDrift(persisted)) {
+    if (this.hasConfigurationDrift(persisted, configurations)) {
       this.logger.log(
         `Updating Credo issuer record ${Oid4vcIssuerService.ISSUER_ID}: credential configurations drifted`,
       );
       await agent.modules.openId4VcIssuer.updateIssuerMetadata({
         issuerId: Oid4vcIssuerService.ISSUER_ID,
         display: [{ name: this.config.issuerDisplayName }],
-        credentialConfigurationsSupported: DEFAULT_CREDENTIAL_CONFIGURATIONS,
+        credentialConfigurationsSupported: configurations,
       });
       record = await agent.modules.openId4VcIssuer.getIssuerByIssuerId(Oid4vcIssuerService.ISSUER_ID);
     }
     return record;
   }
 
-  private hasConfigurationDrift(persisted: Record<string, unknown> | undefined): boolean {
+  private hasConfigurationDrift(
+    persisted: Record<string, unknown> | undefined,
+    current: OpenId4VciCredentialConfigurationsSupported,
+  ): boolean {
     if (!persisted) return true;
-    const expectedKeys = Object.keys(DEFAULT_CREDENTIAL_CONFIGURATIONS).sort();
+    const expectedKeys = Object.keys(current).sort();
     const actualKeys = Object.keys(persisted).sort();
     if (expectedKeys.length !== actualKeys.length) return true;
     for (let i = 0; i < expectedKeys.length; i++) {
       if (expectedKeys[i] !== actualKeys[i]) return true;
     }
     try {
-      return JSON.stringify(persisted) !== JSON.stringify(DEFAULT_CREDENTIAL_CONFIGURATIONS);
+      return JSON.stringify(persisted) !== JSON.stringify(current);
     } catch {
       return true;
     }
   }
 
   /**
-   * Creates a pre-authorized OID4VCI offer for the provided credential
-   * configuration ids and returns the offer URI plus a tracking record so the
-   * caller can later look up the issuance state.
+   * Returns the merged set of credential configurations (hardcoded defaults
+   * + dynamic ones from Vault KV).
+   */
+  async getCredentialConfigurations(): Promise<OpenId4VciCredentialConfigurationsSupported> {
+    const out = { ...DEFAULT_CREDENTIAL_CONFIGURATIONS };
+    if (!this.tokenProvider.isConfigured()) return out;
+
+    try {
+      const token = await this.tokenProvider.getToken();
+      const ids = await this.vaultService.kvList(CREDENTIAL_CONFIGURATIONS_KV_FOLDER, token);
+      for (const id of ids) {
+        try {
+          const cfg = await this.vaultService.kvRead<Record<string, unknown>>(
+            `${CREDENTIAL_CONFIGURATIONS_KV_FOLDER}/${id}`,
+            token,
+          );
+          if (cfg && typeof cfg.format === 'string') {
+            // Validation: SD-JWT must have a VCT
+            const isSdJwt = cfg.format === OpenId4VciCredentialFormatProfile.SdJwtVc;
+            if (isSdJwt && !cfg.vct) {
+              this.logger.warn(`Skipping credential configuration ${id} from Vault: missing "vct" property for SdJwtVc format`);
+              continue;
+            }
+            out[id] = cfg as any;
+          } else if (cfg) {
+            this.logger.warn(`Skipping credential configuration ${id} from Vault: missing or invalid "format" property`);
+          }
+        } catch (e) {
+          this.logger.warn(`Failed to read credential configuration ${id} from Vault: ${(e as Error).message}`);
+        }
+      }
+    } catch (e) {
+      // Fall back to defaults if Vault is unreachable or uninitialized
+      this.logger.debug(`Could not fetch dynamic credential configurations: ${(e as Error).message}`);
+    }
+    return out;
+  }
+
+  /** Dynamic config: persists a new configuration to Vault and syncs Credo. */
+  async setCredentialConfiguration(id: string, config: SetCredentialConfigurationDto): Promise<void> {
+    if (config.format === OpenId4VciCredentialFormatProfile.SdJwtVc && !config.vct) {
+      throw new BadRequestException('SD-JWT VC configuration must have a "vct" property');
+    }
+
+    const token = await this.tokenProvider.getToken();
+    await this.vaultService.kvWrite(`${CREDENTIAL_CONFIGURATIONS_KV_FOLDER}/${id}`, config, token);
+    try {
+      await this.ensureIssuer();
+    } catch (e) {
+      this.logger.error(`Failed to sync Credo after updating configuration ${id}: ${(e as Error).message}`);
+      // We don't delete from Vault here to allow manual correction, but we
+      // bubble up the error so the user knows sync failed.
+      throw e;
+    }
+  }
+
+  /** Dynamic config: removes a configuration from Vault and syncs Credo. */
+  async removeCredentialConfiguration(id: string): Promise<void> {
+    const token = await this.tokenProvider.getToken();
+    await this.vaultService.kvDelete(`${CREDENTIAL_CONFIGURATIONS_KV_FOLDER}/${id}`, token);
+    await this.ensureIssuer();
+  }
+
+  /**
+   * Creates a pre-authorized OID4VCI offer for the supplied credential
+   * configuration ids. The `holderDidKey` is the wallet-local `did:key`
+   * the credential will be bound to — it is captured upfront by the v2
+   * caller (and proven via `CredentialAuthGuard`) so the mapper can
+   * enforce a single fixed binding when the wallet redeems the offer.
    */
   async createOffer(input: {
     credentialConfigurationIds: string[];
-    userId: string;
+    holderDidKey: string;
     issuanceMetadata?: Record<string, unknown>;
   }): Promise<Oid4vcIssuanceSession> {
-    if (!input.userId) {
+    if (!input.holderDidKey || !input.holderDidKey.startsWith('did:key:')) {
       throw new Error(
-        'createOffer requires a userId: every credential is bound to the recipient\'s did:algo, ' +
-          'so anonymous offers are not supported.',
+        'createOffer requires a `holderDidKey` (did:key:…) — the wallet-local DID the ' +
+          'credential will be bound to. Anonymous offers are not supported.',
       );
     }
     const agent = await this.agentProvider.getAgent();
@@ -164,17 +207,15 @@ export class Oid4vcIssuerService implements OnModuleInit {
       preAuthorizedCodeFlowConfig: { txCode: undefined },
       issuanceMetadata: {
         ...(input.issuanceMetadata ?? {}),
-        // Include the offered configurations so the mapper can validate them
-        // without re-parsing the request payload.
         _offeredCredentialConfigurationIds: input.credentialConfigurationIds,
-        _userId: input.userId,
+        _holderDidKey: input.holderDidKey,
       },
     });
 
     const record = this.sessionRepo.create({
       credoIssuanceSessionId: issuanceSession.id,
       issuerId: Oid4vcIssuerService.ISSUER_ID,
-      userId: input.userId,
+      holderDidKey: input.holderDidKey,
       offeredCredentialConfigurationIds: input.credentialConfigurationIds,
       preAuthorizedCode: issuanceSession.preAuthorizedCode,
       credentialOffer,
@@ -210,65 +251,67 @@ export class Oid4vcIssuerService implements OnModuleInit {
   private buildCredentialMapper(): OpenId4VciCredentialRequestToCredentialMapper {
     return async ({ credentialConfigurationIds, issuanceSession, holderBinding }) => {
       const configurationId = credentialConfigurationIds[0];
-      const configuration = DEFAULT_CREDENTIAL_CONFIGURATIONS[configurationId];
+      const configurations = await this.getCredentialConfigurations();
+      const configuration = configurations[configurationId];
       if (!configuration) {
         throw new Error(`Unknown credential configuration ${configurationId}`);
       }
 
       const claims = (issuanceSession.issuanceMetadata ?? {}) as Record<string, unknown>;
-      const offerUserId = (claims._userId as string | undefined) ?? undefined;
+      const holderDidKey = claims._holderDidKey as string | undefined;
       const issuerDid = await this.agentProvider.ensureIssuerDid();
 
-      // Strict `#keys-2` holder binding:
+      // Holder binding model (post‑v2):
       //
-      // The user's on-chain `did:algo` document carries two verification
-      // methods — `#keys-1` (the platform-custodied Vault key, used by the
-      // issuer) and `#keys-2` (the user's self-custody wallet key,
-      // attested via the link/integrity flow). Credentials must be bound
-      // to `#keys-2`: the user is the only one who can prove possession,
-      // and that's what later lets the holder sign Key-Binding JWTs / VP
-      // proofs against the credential.
+      // The wallet authenticates at the v2 API edge with a `did:key`
+      // it minted locally (proof of possession via a signed JWT,
+      // augmented by a device-attestation header). The offer-creation
+      // call pins that exact `did:key` into the issuance session's
+      // metadata. When the wallet later redeems the offer over
+      // OID4VCI, Credo invokes this mapper with the proof JWT's
+      // `holderBinding` — we accept the credential request only if
+      // the holder DID in the proof matches the DID we pinned.
       //
-      // Anything else is rejected: missing offer userId, unprovisioned
-      // user, holder method other than `did`, holder DID mismatch, or a
-      // `kid` that isn't `<userDid>#keys-2` (e.g. `#keys-1` — that's the
-      // platform's key, not the user's). All currently advertised
-      // configurations are DID-bound, so these checks always run.
-      if (!offerUserId) {
+      // There is no server-side user record involved: the `did:key`
+      // *is* the user. The only persisted artefact is the issuance
+      // session, retained so callers can correlate offers and audit
+      // issuance.
+      if (!holderDidKey) {
         throw new Error(
-          `Cannot issue ${configurationId}: the credential offer was created without a userId. ` +
-            'DID-bound credentials must be tied to an existing platform user (did:algo).',
-        );
-      }
-      const doc = await this.agentProvider.resolveUserAlgoDidDocument(offerUserId);
-      if (!doc) {
-        throw new Error(
-          `Cannot issue ${configurationId}: user ${offerUserId} does not have a published did:algo. ` +
-            'Every platform user must have an on-chain DID before they can be issued credentials.',
-        );
-      }
-      const userAlgoDid = doc.did;
-      const userKeys2Id = `${doc.did}#keys-2`;
-      if (!doc.verificationMethodIds.includes(userKeys2Id)) {
-        throw new Error(
-          `Cannot issue ${configurationId}: user ${offerUserId} has not registered a self-custody ` +
-            `wallet key (#keys-2) on ${doc.did}. The user must complete device link/attestation ` +
-            'before credentials can be bound to them.',
+          `Cannot issue ${configurationId}: the credential offer has no pinned holder did:key. ` +
+            'Offers must be created with `holderDidKey` via the v2 OID4VC controller.',
         );
       }
       if (holderBinding.method !== 'did') {
         throw new Error(
           `Cannot issue ${configurationId}: holder binding method '${holderBinding.method}' is not supported. ` +
-            `The wallet must prove possession of ${userKeys2Id}.`,
+            `The wallet must prove possession of ${holderDidKey}.`,
         );
       }
-      if (holderBinding.didUrl !== userKeys2Id) {
+      // Accept either the bare did:key or a fragment URL underneath
+      // it (e.g. `did:key:z…#z…`) — Credo sometimes passes the
+      // verification-method id rather than the DID itself.
+      const proposedHolder = holderBinding.didUrl;
+      const matchesHolderDid = proposedHolder === holderDidKey || proposedHolder.startsWith(`${holderDidKey}#`);
+      if (!matchesHolderDid) {
         throw new Error(
           `Holder binding mismatch for ${configurationId}: wallet proved possession of ` +
-            `${holderBinding.didUrl} but credentials must be bound to ${userKeys2Id} ` +
-            "(the user's self-custody wallet key).",
+            `${proposedHolder} but credentials must be bound to ${holderDidKey} ` +
+            '(the did:key pinned when the offer was created).',
         );
       }
+
+      // Credo's `SdJwtVcService.extractKeyFromHolderBinding` runs
+      // `parseDid(holder.didUrl)` and refuses a holder whose `didUrl`
+      // does not carry a `#fragment` (it needs to dereference a
+      // specific verification method, not the DID document as a
+      // whole). For `did:key` the verification-method id is the DID
+      // followed by `#<method-specific-id>` (i.e. the same multibase
+      // value that follows `did:key:`). Build that here so the SD-JWT
+      // VC's `cnf.kid` resolves to a concrete key.
+      const holderVerificationMethodId = holderDidKey.startsWith('did:key:')
+        ? `${holderDidKey}#${holderDidKey.slice('did:key:'.length)}`
+        : holderDidKey;
 
       switch (configuration.format) {
         case OpenId4VciCredentialFormatProfile.SdJwtVc: {
@@ -276,14 +319,11 @@ export class Oid4vcIssuerService implements OnModuleInit {
             credentialSupportedId: configurationId,
             format: ClaimFormat.SdJwtVc,
             payload: {
-              vct: (configuration as { vct?: string }).vct ?? 'credential-sd-jwt',
+              vct: (configuration as { vct?: string }).vct!,
               ...stripInternalKeys(claims),
             },
             issuer: { method: 'did', didUrl: issuerDid.verificationMethodId },
-            // Bind to the user's self-custody wallet key (`#keys-2`), so a
-            // later Key-Binding JWT signed by the device can be verified
-            // against the on-chain DID document.
-            holder: { method: 'did', didUrl: userKeys2Id as string },
+            holder: { method: 'did', didUrl: holderVerificationMethodId },
             disclosureFrame: { _sd: Object.keys(stripInternalKeys(claims)) },
           };
           return signed;
@@ -292,12 +332,16 @@ export class Oid4vcIssuerService implements OnModuleInit {
         case OpenId4VciCredentialFormatProfile.JwtVcJson:
         case OpenId4VciCredentialFormatProfile.JwtVcJsonLd:
         case OpenId4VciCredentialFormatProfile.LdpVc: {
+          const type = (configuration as any).credential_definition?.type ?? [
+            'VerifiableCredential',
+            'CredentialJwtVc',
+          ];
           const credential = new W3cCredential({
-            type: ['VerifiableCredential', 'CredentialJwtVc'],
+            type,
             issuer: new W3cIssuer({ id: issuerDid.did }),
             issuanceDate: w3cDate(),
             credentialSubject: {
-              id: userAlgoDid as string,
+              id: holderDidKey,
               ...stripInternalKeys(claims),
             },
           });

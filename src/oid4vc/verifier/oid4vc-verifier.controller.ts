@@ -1,11 +1,8 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { Oid4vcVerifierService } from './oid4vc-verifier.service';
-import {
-  CreatePresentationRequestDto,
-  PresentationRequestResponseDto,
-} from '../dto/create-presentation-request.dto';
+import { CreatePresentationRequestDto, PresentationRequestResponseDto } from '../dto/create-presentation-request.dto';
 import { Oid4vcVerificationSession } from '../entities/oid4vc-verification-session.entity';
 
 /**
@@ -16,8 +13,9 @@ import { Oid4vcVerificationSession } from '../entities/oid4vc-verification-sessi
  * `OID4VC_VERIFIER_PATH`. These routes here are app-level helpers used by the
  * front-end to start a verification flow and poll for the result.
  */
-@ApiTags('oid4vc-verifier')
-@Controller('oid4vc/verifier')
+@ApiTags('OID4VC')
+@ApiBearerAuth()
+@Controller('credential/verifier')
 export class Oid4vcVerifierController {
   constructor(private readonly verifier: Oid4vcVerifierService) {}
 
@@ -26,7 +24,6 @@ export class Oid4vcVerifierController {
   async createRequest(@Body() dto: CreatePresentationRequestDto): Promise<PresentationRequestResponseDto> {
     const session = await this.verifier.createPresentationRequest({
       presentationDefinition: dto.presentationDefinition,
-      userId: dto.userId,
     });
     return toResponse(session);
   }

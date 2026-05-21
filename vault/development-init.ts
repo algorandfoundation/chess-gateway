@@ -2,13 +2,16 @@ import 'dotenv/config';
 import * as fs from 'fs';
 import axios from 'axios';
 import assert from 'assert';
-import SQLite from 'better-sqlite3';
-import * as path from 'path';
 import { Address } from '@algorandfoundation/algokit-utils';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { DidAlgoStorageFactory } from '../libs/did-algo';
-import { buildAlgorandClient, prefundAccountIfLocalNet } from '../libs/algorand';
+import {
+  APP_ACCOUNT_BASE_MBR_MICROALGOS,
+  buildAlgorandClient,
+  prefundAccountIfLocalNet,
+  topUpFromSender,
+} from '../libs/algorand';
 import { VaultService } from '../src/vault/vault.service';
 import { ChainService } from '../src/chain/chain.service';
 import { buildVaultTransactionSigner } from '../src/did/vault-signer';
@@ -16,7 +19,6 @@ import { updateEnvFile } from '../libs/env';
 
 // Constants
 const VAULT_BASE_URL = process.env.VAULT_BASE_URL || 'http://vault:8200';
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 const VAULT_INIT_ENDPOINT = '/v1/sys/init';
 const VAULT_UNSEAL_ENDPOINT = '/v1/sys/unseal';
 const VAULT_MOUNTS_ENDPOINT = '/v1/sys/mounts';
@@ -52,6 +54,12 @@ async function initVault() {
   // Initialize transit engine
   await initUsersTransitEngine(response.data.root_token);
   await initManagersTransitEngine(response.data.root_token);
+  // Mount the KV-v2 secret engine the service uses for operational
+  // state (DID app id, attestation challenges) under `secret/`. Vault
+  // only auto-mounts this in dev mode; production-style (sealed) Vault
+  // installs need an explicit mount, otherwise every `kvRead`/`kvWrite`
+  // 403s before the request even reaches the policy layer.
+  await initKvSecretEngine(response.data.root_token);
 
   console.log('Vault Token:', response.data.root_token);
 
@@ -103,6 +111,36 @@ async function initUsersTransitEngine(token: string) {
   console.log('Mount users transit engine response status:', mountResponse.status);
 }
 
+// Idempotently mount the KV-v2 secret engine at `secret/`. The service
+// reads/writes operational state (DID app id, attestation challenges)
+// via `VaultService.kv*`, which always targets `secret/data/...` and
+// `secret/metadata/...`. Vault returns 400 with `path is already in
+// use` if the mount exists — we treat that as success.
+async function initKvSecretEngine(token: string) {
+  try {
+    const mountResponse = await axios.post(
+      `${VAULT_BASE_URL}${VAULT_MOUNTS_ENDPOINT}/secret`,
+      {
+        type: 'kv',
+        options: { version: '2' },
+      },
+      {
+        headers: {
+          'X-Vault-Token': token,
+        },
+      },
+    );
+    console.log('Mount kv-v2 secret engine response status:', mountResponse.status);
+  } catch (error) {
+    const status = error?.response?.status;
+    const message: string = error?.response?.data?.errors?.[0] ?? '';
+    if (status === 400 && message.includes('path is already in use')) {
+      console.log('Mount kv-v2 secret engine already in use (idempotent)');
+      return;
+    }
+    throw error;
+  }
+}
 // Function to initialize manager transit engine
 async function initManagersTransitEngine(token: string) {
   // Mount transit engine
@@ -179,6 +217,19 @@ async function createACLPolicies(token: string) {
         [`${VAULT_TRANSIT_USERS_PATH}/sign/*`]: {
           capabilities: ['create', 'read', 'update'],
         },
+
+        // KV-v2 (`secret/` mount) — operational state the service
+        // owns, namespaced under `intermezzo/`. Today this stores the
+        // deployed `DIDAlgoStorage` app id (see `DidService`) and the
+        // single-use attestation challenges (see `LinkService`).
+        // Both `data/` (versions) and `metadata/` (list/delete) paths
+        // are required for full KV-v2 read/write/list/delete.
+        [`secret/data/intermezzo/*`]: {
+          capabilities: ['create', 'read', 'update', 'delete'],
+        },
+        [`secret/metadata/intermezzo/*`]: {
+          capabilities: ['list', 'read', 'delete'],
+        },
       },
     },
     // OID4VC ISSUER
@@ -224,6 +275,14 @@ async function createACLPolicies(token: string) {
         [`${VAULT_TRANSIT_USERS_PATH}/sign/*`]: {
           capabilities: ['create', 'read', 'update'],
         },
+        // Operational state (DID app id, attestation challenges,
+        // OID4VC sessions and configurations) stored in KV-v2.
+        [`secret/data/intermezzo/*`]: {
+          capabilities: ['create', 'read', 'update', 'delete'],
+        },
+        [`secret/metadata/intermezzo/*`]: {
+          capabilities: ['list', 'read', 'delete'],
+        },
       },
     },
   };
@@ -244,11 +303,7 @@ async function createACLPolicies(token: string) {
         },
       },
     );
-    console.log(
-      policyExists
-        ? `ACL policy '${policyName}' updated`
-        : `ACL policy '${policyName}' created`,
-    );
+    console.log(policyExists ? `ACL policy '${policyName}' updated` : `ACL policy '${policyName}' created`);
   }
 }
 
@@ -485,6 +540,12 @@ async function main() {
 
   console.log('\n\n------------\nVault Root Token:\n', sealKeys.root_token, '\n------------\n\n');
 
+  // Ensure the KV-v2 secret engine is mounted on every run, not only on
+  // first init. Existing dev environments (initialised before this
+  // script learned to mount kv-v2) otherwise stay broken until a full
+  // reset; this idempotent call upgrades them in place.
+  await initKvSecretEngine(sealKeys.root_token);
+
   await createACLPolicies(sealKeys.root_token);
   await enableAppRoleIfNotEnabledAuth(sealKeys.root_token);
   await getOrCreateAppRoles(sealKeys.root_token);
@@ -493,11 +554,7 @@ async function main() {
   console.log('\n\n\nMANAGER SECRETS\n-----');
   await logRoleIdAndSecretId(MANAGERS_APP_ROLE_NAME, sealKeys.root_token, MANAGERS_ROLE_AND_SECRET_KEYS_FILE);
   console.log('\n\n\nOID4VC ISSUER SECRETS\n-----');
-  await logRoleIdAndSecretId(
-    OID4VC_ISSUER_APP_ROLE_NAME,
-    sealKeys.root_token,
-    OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE,
-  );
+  await logRoleIdAndSecretId(OID4VC_ISSUER_APP_ROLE_NAME, sealKeys.root_token, OID4VC_ISSUER_ROLE_AND_SECRET_KEYS_FILE);
   // Mirror the role/secret into the project `.env` so the Nest agent picks
   // them up on the very next boot without an extra manual step.
   try {
@@ -535,7 +592,15 @@ async function main() {
   await getOrCreateUser('charlie', sealKeys.root_token);
 
   // Application check / deployment
-  let appId = process.env.DID_ALGO_APP_ID;
+  //
+  // The manager's `DIDAlgoStorage` app id is no longer kept in `.env`;
+  // it lives in Vault KV-v2 at `secret/intermezzo/manager/app-id`. Per-
+  // user `DIDAlgoStorage` contracts live alongside it under
+  // `secret/intermezzo/users/{did:key}/app-id` and are provisioned on
+  // demand by `DidService.publishUncontrolledDid`.
+  const MANAGER_APP_ID_KV_PATH = 'intermezzo/manager/app-id';
+  const persistedEntry = await vault.kvRead<{ appId: string }>(MANAGER_APP_ID_KV_PATH, sealKeys.root_token);
+  let appId = persistedEntry?.appId;
   let appFound = false;
 
   if (appId && appId !== '0' && appId !== '1337') {
@@ -577,90 +642,22 @@ async function main() {
     appId = appClient.appId.toString();
     console.log(`Successfully deployed DIDAlgoStorage. App ID: ${appId}`);
 
-    // 2. Fund the contract address
-    await prefundAccountIfLocalNet(algorand, appClient.appAddress, 1000);
+    // 2. Fund the contract account from the manager with just its
+    //    base MBR (0.1 ALGO). Per-box MBR is paid inline by the
+    //    manager as part of each `upload` group.
+    await topUpFromSender(algorand, managerAddress, appClient.appAddress, APP_ACCOUNT_BASE_MBR_MICROALGOS);
 
-    updateEnvFile('DID_ALGO_APP_ID', appId);
-    process.env.DID_ALGO_APP_ID = appId;
+    await vault.kvWrite(MANAGER_APP_ID_KV_PATH, { appId }, sealKeys.root_token);
+    console.log(`Persisted appId=${appId} to Vault KV at ${MANAGER_APP_ID_KV_PATH}`);
   }
 
-  // Database initialization for development users
-  const dbPath = path.join(process.cwd(), 'database.sqlite');
-  console.log(`\nInitializing development users in database: ${dbPath}`);
-  const db = new SQLite(dbPath);
-  const now = new Date().toISOString();
-
-  // Alice: registered user to the sql database without a DID.
-  db.prepare(
-    `
-    INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `,
-  ).run('alice', 'Alice', 'alice@example.com', 1, now, now);
-  console.log('Alice registered in database (no DID)');
-  db.close();
-
-  // Bob: publish a DID via the live API, mirroring how a real client would.
-  // The pawn container runs both this init script and the API on the same
-  // host, so we hit `API_BASE_URL` (defaults to http://localhost:3000) using
-  // the manager AppRole credentials we just wrote to disk.
-  const managerCreds = JSON.parse(fs.readFileSync(MANAGERS_ROLE_AND_SECRET_KEYS_FILE).toString()) as {
-    role_id: string;
-    secret_id: string;
-  };
-
-  await waitForApi(API_BASE_URL);
-
-  console.log(`\nLogging into API to publish DID for Bob via ${API_BASE_URL}...`);
-  const apiVaultToken = await vaultApproleLogin(managerCreds);
-  const accessToken = await apiSignIn(apiVaultToken);
-  const bobInfo = await createUserViaApi(accessToken, 'bob');
-  console.log(`Bob created via API. did=${bobInfo?.did ?? 'null'} address=${bobInfo?.public_address ?? 'n/a'}`);
-  if (!bobInfo?.did) {
-    throw new Error(`Expected DID for Bob in API response, got: ${JSON.stringify(bobInfo)}`);
-  }
-}
-
-async function vaultApproleLogin(creds: { role_id: string; secret_id: string }): Promise<string> {
-  const response = await axios.post(`${VAULT_BASE_URL}/v1/auth/approle/login`, creds);
-  const token = response.data?.auth?.client_token;
-  if (!token) {
-    throw new Error(`Vault AppRole login did not return a client_token (status=${response.status})`);
-  }
-  return token;
-}
-
-async function apiSignIn(vaultToken: string): Promise<string> {
-  const response = await axios.post(`${API_BASE_URL}/v1/auth/sign-in/`, { vault_token: vaultToken });
-  const accessToken = response.data?.access_token;
-  if (!accessToken) {
-    throw new Error(`API sign-in did not return an access_token (status=${response.status})`);
-  }
-  return accessToken;
-}
-
-async function createUserViaApi(accessToken: string, userId: string): Promise<any> {
-  const response = await axios.post(
-    `${API_BASE_URL}/v1/wallet/user/`,
-    { user_id: userId },
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
-  return response.data;
-}
-
-async function waitForApi(baseUrl: string, attempts = 60, delayMs = 1000): Promise<void> {
-  const url = `${baseUrl}/v1/auth/sign-in/`;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      // We expect 4xx (missing body / bad token) once the server is up — that's fine,
-      // we just want to know the HTTP listener is accepting connections.
-      await axios.post(url, {}, { validateStatus: () => true, timeout: 1500 });
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-  throw new Error(`API at ${baseUrl} did not become reachable after ${attempts} attempts`);
+  // User registration and the local sqlite seed have been removed: the
+  // service no longer owns a user database. Wallets self-onboard via
+  // `POST /v1/link/response`, which mints an uncontrolled
+  // `did:algo` for the caller's `did:key` against the deployed
+  // `DIDAlgoStorage` contract above. The dev-user transit keys created
+  // earlier in this script (`alice`, `bob`, `charlie`) remain only as
+  // pre-warmed material for the legacy `/v1/wallet/user/*` JWT routes.
 }
 
 // Run main function

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import createMockInstance from 'jest-create-mock-instance';
 import { HttpService } from '@nestjs/axios';
 import { Axios } from 'axios';
+import { ServiceUnavailableException } from '@nestjs/common';
 import { TruncatedAccountResponse } from 'src/chain/algo-node-responses';
 import {
   decodeTransaction,
@@ -382,7 +383,8 @@ describe('ChainService', () => {
         },
       });
 
-      await expect(chainService.getSuggestedParams()).rejects.toThrow('NodeException: Bad Request');
+      await expect(chainService.getSuggestedParams()).rejects.toThrow(ServiceUnavailableException);
+      await expect(chainService.getSuggestedParams()).rejects.toThrow('AlgodNode is misconfigured or unavailable');
     });
 
     it('should throw InternalServerErrorException if error does not have response.status', async () => {
@@ -390,7 +392,8 @@ describe('ChainService', () => {
         text: 'Bad Request',
       });
 
-      await expect(chainService.getSuggestedParams()).rejects.toThrow('NodeException');
+      await expect(chainService.getSuggestedParams()).rejects.toThrow(ServiceUnavailableException);
+      await expect(chainService.getSuggestedParams()).rejects.toThrow('AlgodNode is misconfigured or unavailable');
     });
   });
 
@@ -538,7 +541,10 @@ describe('ChainService', () => {
         },
       });
 
-      await expect(chainService.getAccountAsset(publicAddress, assetId)).rejects.toThrow('NodeException');
+      await expect(chainService.getAccountAsset(publicAddress, assetId)).rejects.toThrow(ServiceUnavailableException);
+      await expect(chainService.getAccountAsset(publicAddress, assetId)).rejects.toThrow(
+        'AlgodNode is misconfigured or unavailable',
+      );
     });
   });
 });

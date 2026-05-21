@@ -132,11 +132,16 @@ export async function deleteDIDDocument(
  *
  * The contract uses `lastDeleted=0` as the initial sentinel (set by
  * `startUpload`); a value of `0` only really means "no progress" when
- * `start > 0`. To stay correct in the edge case where `start === 0`, we
- * treat any `lastDeleted < start` as "haven't started yet" and resume
- * from `start`.
+ * `start > 0`. For the edge case where `start === 0` the sentinel
+ * collides with a legitimate "I deleted box 0 as a non-end box" record,
+ * so we additionally disambiguate via `status`: when `status === READY`
+ * the document is intact (`startDelete` hasn't even run yet), therefore
+ * by construction no `deleteData` has executed and the first box to
+ * delete is `metadata.start`. Once `status === DELETING`, `lastDeleted`
+ * is authoritative.
  */
 function computeNextBoxToDelete(metadata: Metadata): bigint {
+  if (Number(metadata.status) === DID_STATUS_READY) return metadata.start;
   if (metadata.lastDeleted < metadata.start) return metadata.start;
   return metadata.lastDeleted + 1n;
 }

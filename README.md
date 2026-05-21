@@ -1,5 +1,25 @@
 # Chess Gateway
 
+Custody + verifiable-credential gateway for Algorand. The service runs
+two co-existing auth models on a single `/v1` surface:
+
+1. **Vault AppRole + JWT** — manager-operated admin surface
+   (`/v1/auth/sign-in`, `/v1/wallet/...`, `/v1/credential/...` admin).
+2. **`did:key` + device-attestation credential** — self-custody wallet
+   surface. Wallets prove possession of an on-device `did:key` at
+   `POST /v1/link/response`, receive a
+   `device-attestation-credential` (SD-JWT VC), and from then on
+   authenticate via `CredentialAuthGuard` on `/v1/did/update/submit`.
+
+Trust model: manager `did:algo` (on-chain issuer) + CREDEBL trust
+registry (governance) + holder `did:key` (wallet). Every `did:algo`
+document lives on Algorand and is resolved on demand by the Credo
+agent's `AlgoDidResolver`. See:
+
+- [`src/oid4vc/README.md`](./src/oid4vc/README.md) — OID4VCI / OID4VP subsystem.
+- [`src/oid4vc/TRUST_MODEL.md`](./src/oid4vc/TRUST_MODEL.md) — trust model.
+- [`TODO.md`](./TODO.md) — milestone roadmap.
+
 Chess Gateway uses a traditional KMS (Key Management Service) to manage the keys for Algorand transaction signing and integration. In this specific case, we are using Hashicorp Vault as the KMS.
 
 ## For whom is this?

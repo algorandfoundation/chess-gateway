@@ -1,37 +1,33 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { ChainModule } from '../chain/chain.module';
 import { VaultModule } from '../vault/vault.module';
-import { VerificationModule } from '../link/verification/verification.module';
-import { DidRecord } from './entities/did-record.entity';
-import { Oid4vcUserDeviceManifest } from '../oid4vc/entities/oid4vc-user-device-manifest.entity';
-import { Oid4vcUserDeviceManifestRevision } from '../oid4vc/entities/oid4vc-user-device-manifest-revision.entity';
-import { DidService } from './did.service';
 import { DidController } from './did.controller';
+import { DidService } from './did.service';
+import { AuthModule } from '../auth/auth.module';
 
 /**
- * Wires up DID-algo publication + local resolver capabilities.
+ * Wires up `did:algo` publication.
  *
- * `DidService` depends on the existing `ChainService` (signature
- * assembly) and `VaultService` (manager key custody), so both modules
- * are imported here. Re-exporting `DidService` lets `WalletService`
- * trigger a DID publish whenever a new user is created.
+ * `DidService` is stateless — there is no local cache or repository
+ * of published documents; the `DIDAlgoStorage` smart-contract boxes
+ * are the single source of truth, and resolution flows through the
+ * Credo `AlgoDidResolver` against the on-chain reader. `DidService`
+ * depends on `ChainService` (signature assembly) and `VaultService`
+ * (manager key custody). Re-exporting `DidService` lets the OID4VC
+ * agent provider trigger an issuer-DID publish on bootstrap and the
+ * attestation flow publish wallet-owned uncontrolled DIDs on demand.
+ *
+ * `AuthModule` is imported (with `forwardRef`) so the controller can
+ * resolve `CredentialAuthGuard` and `ManagerVaultTokenProvider` for
+ * the credential-gated `POST /did/identities/create/transactions` route; every
+ * other route on the controller relies on the project-global manager
+ * `AuthGuard` and needs no extra providers here.
  */
 @Module({
-  imports: [
-    TypeOrmModule.forFeature([
-      DidRecord,
-      Oid4vcUserDeviceManifest,
-      Oid4vcUserDeviceManifestRevision,
-    ]),
-    ChainModule,
-    VaultModule,
-    VerificationModule,
-    ConfigModule,
-  ],
+  imports: [ChainModule, VaultModule, ConfigModule, forwardRef(() => AuthModule)],
   controllers: [DidController],
   providers: [DidService],
-  exports: [DidService, TypeOrmModule],
+  exports: [DidService],
 })
 export class DidModule {}

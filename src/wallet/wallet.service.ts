@@ -1,13 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { VaultService } from '../vault/vault.service';
 import { ChainService } from '../chain/chain.service';
 import { DidService } from '../did/did.service';
-import { VerificationService } from '../link/verification/verification.service';
-import { LinkVerification } from '../link/verification/entities/link-verification.entity';
 import { CreateAssetDto } from './create-asset.dto';
 import { UserInfoResponseDto } from './user-info-response.dto';
 import { ConfigService } from '@nestjs/config';
 import { ManagerDetailDto } from './manager-detail.dto';
+import { ManagerIdentityDto, DeployManagerIdentityResponseDto } from './manager-identity.dto';
+import { Oid4vcAgentProvider } from '../oid4vc/agent/oid4vc-agent.provider';
 import { plainToClass } from 'class-transformer';
 import { AssetHolding } from 'src/chain/algo-node-responses';
 import { Address } from '@algorandfoundation/algokit-utils';
@@ -20,26 +20,120 @@ export class WalletService {
     private readonly chainService: ChainService,
     private readonly configService: ConfigService,
     private readonly didService: DidService,
-    private readonly verificationService: VerificationService,
+    private readonly oid4vcAgentProvider: Oid4vcAgentProvider,
   ) {}
 
   /**
-   * Resolve the associated local wallet address for a user, if any.
-   * Returns `null` when no link verification record exists or when the
-   * most recent association did not supply a wallet address — callers
-   * always emit `wallet_address` (string or null) on responses.
+   * Resolve the manager's issuer `did:algo` and its on-chain DID
+   * Document. Wallets and partner verifiers can pin the issuer via
+   * this endpoint without shipping a `did:algo` resolver themselves.
+   *
+   * The DID is provisioned (or reused) by
+   * {@link Oid4vcAgentProvider.ensureIssuerDid}; resolution goes
+   * through the agent's resolver matrix and the on-chain
+   * `DIDAlgoStorage` box is the source of truth.
+   *
+   * When no `DIDAlgoStorage` contract has been deployed yet (fresh
+   * install, network switch, or post-rotation pre-deploy) this
+   * throws `NotFoundException` (HTTP 404). The manager can then call
+   * `deployManagerIdentity` to bring the service up.
    */
-  private async resolveLinkedWalletAddress(user_id: string): Promise<string | null> {
-    const verifications: LinkVerification[] = await this.verificationService.findByPlayerId(user_id);
-    if (!verifications || verifications.length === 0) return null;
-    // Pick the most recently associated verification when multiple exist.
-    const verification = verifications.reduce((a, b) =>
-      a.associatedAt && b.associatedAt && a.associatedAt > b.associatedAt ? a : b,
-    );
-    return verification.walletAddress ? verification.walletAddress : null;
+  async getManagerIdentity(): Promise<ManagerIdentityDto> {
+    await this.didService.ensureAppIdLoaded();
+    if (!this.didService.hasAppId()) {
+      throw new NotFoundException(
+        'Manager identity is not deployed. Call `POST /v1/wallet/manager/identity` ' +
+          'with the manager Vault JWT to deploy a `DIDAlgoStorage` contract and ' +
+          'provision the issuer `did:algo`.',
+      );
+    }
+    const issuer = await this.oid4vcAgentProvider.ensureIssuerDid();
+    const agent = await this.oid4vcAgentProvider.getAgent();
+    const resolved = await agent.dids.resolve(issuer.did);
+    if (!resolved.didDocument) {
+      throw new Error(
+        `WalletService.getManagerIdentity: did:algo "${issuer.did}" resolved with no DID Document ` +
+          `(error=${resolved.didResolutionMetadata?.error ?? 'unknown'}).`,
+      );
+    }
+    const appId = this.didService.getAppIdIfDeployed()!;
+    const appAddress = this.didService.getAppAddress();
+    const appBalance = await this.chainService.getAccountBalance(appAddress);
+    return plainToClass(ManagerIdentityDto, {
+      deployed: true,
+      did: issuer.did,
+      verificationMethodId: issuer.verificationMethodId,
+      didDocument: resolved.didDocument.toJSON() as Record<string, unknown>,
+      appId: appId.toString(),
+      appAddress,
+      appBalance: appBalance.toString(),
+    });
+  }
+
+  /**
+   * Deploy (or redeploy) the `DIDAlgoStorage` smart contract and
+   * provision the manager's issuer `did:algo` against it. The manager
+   * Vault key is the creator and signer; the resulting app id is
+   * written to Vault KV at `secret/intermezzo/manager/app-id` so the
+   * next boot keeps using the same contract.
+   *
+   * Useful at:
+   *   - **First boot** — no app id stored in Vault yet; the
+   *     manager calls this endpoint with their Vault JWT to bring the
+   *     service to "able to issue credentials" state.
+   *   - **Key rotation** — when the manager rotates the Vault transit
+   *     key, the on-chain controller key changes; redeploying mints a
+   *     fresh contract anchored to the new key (the old one stays
+   *     readable on chain).
+   *   - **Network switch** — pointing at a new `GENESIS_ID` requires a
+   *     contract on that network.
+   */
+  async deployManagerIdentity(
+    vaultToken: string,
+    options: { force?: boolean } = {},
+  ): Promise<DeployManagerIdentityResponseDto> {
+    const deployment = await this.didService.deployStorage(vaultToken, { force: options.force });
+    // Reset the cached issuer DID so `ensureIssuerDid` re-provisions
+    // against the new contract on the next call.
+    this.oid4vcAgentProvider.resetCachedIssuerDid();
+    const issuer = await this.oid4vcAgentProvider.ensureIssuerDid();
+    const agent = await this.oid4vcAgentProvider.getAgent();
+    const resolved = await agent.dids.resolve(issuer.did);
+    if (!resolved.didDocument) {
+      throw new Error(
+        `WalletService.deployManagerIdentity: did:algo "${issuer.did}" resolved with no DID Document ` +
+          `(error=${resolved.didResolutionMetadata?.error ?? 'unknown'}).`,
+      );
+    }
+    const appBalance = await this.chainService.getAccountBalance(deployment.appAddress);
+    return plainToClass(DeployManagerIdentityResponseDto, {
+      deployed: true,
+      did: issuer.did,
+      verificationMethodId: issuer.verificationMethodId,
+      didDocument: resolved.didDocument.toJSON() as Record<string, unknown>,
+      appId: deployment.appId.toString(),
+      appAddress: deployment.appAddress,
+      appBalance: appBalance.toString(),
+      operation: deployment.operation,
+      deleteTxIds: deployment.deleteTxIds,
+      uploadTxIds: deployment.uploadTxIds,
+      skipped: deployment.skipped,
+      oldMbrMicroAlgos: deployment.oldMbrMicroAlgos,
+      newMbrMicroAlgos: deployment.newMbrMicroAlgos,
+    });
+  }
+
+  /**
+   * The legacy `link/verifications` flow has been removed; there is no
+   * longer an associated local wallet address for a user, so callers
+   * receive `wallet_address: null` unconditionally on every response.
+   */
+  private async resolveLinkedWalletAddress(_user_id: string): Promise<string | null> {
+    return null;
   }
 
   async getUserInfo(user_id: string, vault_token: string): Promise<UserInfoResponseDto> {
+    await this.didService.ensureAppIdLoaded();
     const public_address = await this.vaultService.getUserPublicKey(user_id, vault_token);
 
     // get algo balance
@@ -47,7 +141,12 @@ export class WalletService {
     const algoBalance: bigint = await this.chainService.getAccountBalance(encodedAddress);
     Logger.debug(`User ${user_id} Algo Balance: ${algoBalance}`);
 
-    const did = await this.didService.buildUserDidInfo(user_id);
+    // Derive the canonical `did:algo` identifier directly from the
+    // user's vault public key — the host no longer caches published
+    // DID documents (the on-chain `DIDAlgoStorage` boxes are the only
+    // source of truth), so callers that want to confirm publication
+    // status must resolve the DID via the Credo resolver.
+    const did = this.didService.deriveDid(new Uint8Array(public_address));
     const wallet_address = await this.resolveLinkedWalletAddress(user_id);
     return {
       user_id,
@@ -86,36 +185,37 @@ export class WalletService {
     const public_key: Buffer = await this.vaultService.transitCreateKey(user_id, transitKeyPath, vault_token);
     const public_address: string = new Address(public_key).toString();
 
-    // Publish the new user's DID document on the did:algo registry.
-    // Any failure here propagates and aborts user creation — we will not
-    // leave a user behind without a valid on-chain DID.
-    const publication = await this.didService.publishUserDid({
-      userId: user_id,
-      publicKey: new Uint8Array(public_key),
-      vaultToken: vault_token,
-    });
-
+    // Note: we intentionally do not publish a `did:algo` document for the
+    // user here. Per-user DID contracts are deployed lazily, only after the
+    // user's `did:key` has been attested via the credential flow (see
+    // `POST /v1/did/create/transactions`). Creating a vault user is purely
+    // a key-management operation and no longer touches the chain.
     const wallet_address = await this.resolveLinkedWalletAddress(user_id);
     return {
       user_id,
       public_address,
       algoBalance: '0',
-      did: publication.did ?? null,
+      did: null,
       wallet_address,
     };
   }
 
   // Get all users
   async getKeys(vault_token: string): Promise<UserInfoResponseDto[]> {
+    await this.didService.ensureAppIdLoaded();
     const keys: UserInfoResponseDto[] = (await this.vaultService.getKeys(vault_token)) as UserInfoResponseDto[];
 
     // Enrich each entry: convert raw vault public key bytes to an Algorand
-    // address and attach the DID and link/verification status so the list
-    // endpoint exposes the same shape as the per-user detail endpoint.
+    // address and attach the deterministic `did:algo` identifier plus
+    // any link/verification status so the list endpoint exposes the
+    // same shape as the per-user detail endpoint. The DID is derived
+    // locally from the public key — the host no longer maintains a
+    // local cache of published documents.
     return Promise.all(
       keys.map(async (key) => {
-        key.public_address = new Address(Buffer.from(key.public_address, 'base64')).toString();
-        key.did = await this.didService.buildUserDidInfo(key.user_id);
+        const publicKeyBytes = new Uint8Array(Buffer.from(key.public_address, 'base64'));
+        key.public_address = new Address(publicKeyBytes).toString();
+        key.did = this.didService.deriveDid(publicKeyBytes);
         key.wallet_address = await this.resolveLinkedWalletAddress(key.user_id);
         return key;
       }),

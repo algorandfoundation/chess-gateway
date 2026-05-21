@@ -29,4 +29,20 @@ export {
 
 export { deleteDIDDocument, DID_STATUS_UPLOADING, DID_STATUS_READY, DID_STATUS_DELETING } from './deleteDIDDocument';
 
+export { resolveDIDDocument } from './resolveDIDDocument';
+
+export { tryReadMetadata } from './tryReadMetadata';
+
+export { replaceDIDDocument } from './replaceDIDDocument';
+export type { ReplaceDIDDocumentResult } from './replaceDIDDocument';
+
+export {
+  buildUploadDIDDocumentGroups,
+  buildDeleteDIDDocumentGroups,
+  buildReplaceDIDDocumentGroups,
+  buildCreateUserContractGroup,
+  USER_ACCOUNT_MIN_BALANCE_FOR_CREATE_MICROALGOS,
+} from './buildDIDDocumentTransactions';
+export type { DidTxnSigner, DidUnsignedGroup, DidReplacePlan } from './buildDIDDocumentTransactions';
+
 export { encodeUint64, genesisIdToNetwork, buildDidIdentifier } from './util';

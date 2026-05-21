@@ -21,7 +21,7 @@ sequenceDiagram
 > [!NOTE]
 > - The manager **automatically publishes a DID document** for every user it creates — the publish step is part of `userCreate`, not a manual call.
 > - The fully-qualified `did:algo` identifier is surfaced on the user's response as a plain string under the `did` field (or `null` if no DID has been published).
-> - Publication is **fail-fast**: any on-chain failure aborts user creation with a 5xx — there is no `pending` / `failed` cache row. To retry after fixing the underlying issue, call `POST /did/users/:user_id` directly (use `?force=true` to replace an existing on-chain document).
+> - Publication is **fail-fast**: any on-chain failure aborts user creation with a 5xx — there is no `pending` / `failed` cache row. To retry after fixing the underlying issue, call `POST /did/create/transactions` directly.
 
 ```mermaid
 sequenceDiagram
@@ -52,21 +52,21 @@ flowchart LR
     end
 
     subgraph DID Module
-        P[POST /did/users/:user_id<br/>publish - 409 if exists<br/>?force=true to republish]
-        L[GET /did/users<br/>list cached]
-        G[GET /did/users/:user_id<br/>resolve cached - public]
-        D[DELETE /did/users/:user_id<br/>tear down on chain<br/>+ drop local cache]
+        L[GET /did/identities<br/>list identities]
+        G[GET /did/identities/:didKey<br/>resolve cached - public]
+        C[POST /did/create/submit<br/>deploy on chain]
+        U[POST /did/update/submit<br/>update document]
     end
 
     Network[(Algorand Network<br/>DIDAlgoStorage)]
 
-    M --> P
     M --> L
-    M --> D
     A --> G
+    A --> C
+    A --> U
 
-    P --> Network
-    D --> Network
+    C --> Network
+    U --> Network
 ```
 
 ## 4. Linking a self-custody wallet

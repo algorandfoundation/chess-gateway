@@ -293,18 +293,15 @@ with a 5xx — there is no `pending` / `failed` cache row.
 Resolve the cached document directly (public endpoint, no auth):
 
 ```bash
-curl http://localhost:3000/v1/did/users/<user_id>
+curl http://localhost:3000/v1/did/identities/<didKey>
 ```
 
-Other DID endpoints (all under `/v1/did`):
+Other DID endpoints (under `/v1/did`):
 
-- `POST /did/users/:user_id?force=true` – republish (deletes the existing
-  on-chain document, reclaiming MBR, then publishes a fresh one). Without
-  `force` the request returns 409 if a document already exists.
-- `GET  /did/users` – list every cached record (auth).
-- `DELETE /did/users/:user_id` – run the contract's `startDelete` /
-  `deleteData` flow to tear down the on-chain document and reclaim MBR,
-  then drop the local cache row.
+- `GET /identities` – list every cached record (auth).
+- `GET /identities/:didKey` - Look up a single user record by `did:key`.
+- `POST /create/transactions` - Build the tx group to deploy a caller-owned did:algo contract.
+- `POST /update/transactions` - Build tx groups to update the caller-owned did:algo document.
 
 ---
 

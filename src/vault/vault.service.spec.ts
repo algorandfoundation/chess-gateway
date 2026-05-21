@@ -3,7 +3,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { Axios, AxiosResponse } from 'axios';
 import { randomBytes } from 'crypto';
-import { HttpErrorByCode } from '@nestjs/common/utils/http-error-by-code.util';
+import { ServiceUnavailableException } from '@nestjs/common';
 import createMockInstance from 'jest-create-mock-instance';
 import { UserInfoDto } from './user-info.dto';
 
@@ -66,7 +66,8 @@ describe('VaultService', () => {
         response: { status: 401 },
       });
 
-      await expect(vaultService.authGithub(personal_token)).rejects.toThrow(HttpErrorByCode[401]);
+      await expect(vaultService.authGithub(personal_token)).rejects.toThrow(ServiceUnavailableException);
+      await expect(vaultService.authGithub(personal_token)).rejects.toThrow('Vault is misconfigured or unavailable');
       expect(httpService.axiosRef.post).toHaveBeenCalledWith(
         `${baseUrl}/v1/auth/github/login`,
         { token: personal_token },
@@ -103,7 +104,8 @@ describe('VaultService', () => {
       const error = { response: { status: 401 } };
       (httpService.axiosRef.get as jest.Mock).mockRejectedValue(error);
 
-      await expect(vaultService.checkToken('invalid-token')).rejects.toThrow(HttpErrorByCode[401]);
+      await expect(vaultService.checkToken('invalid-token')).rejects.toThrow(ServiceUnavailableException);
+      await expect(vaultService.checkToken('invalid-token')).rejects.toThrow('Vault is misconfigured or unavailable');
     });
   });
 
@@ -215,8 +217,11 @@ describe('VaultService', () => {
       const error = { response: { status: 403 } };
       (httpService.axiosRef.get as jest.Mock).mockRejectedValue(error);
 
-      // check code to be 403
-      await expect(vaultService.getUserPublicKey('user-key', 'token')).rejects.toThrow(HttpErrorByCode[403]);
+      // check code to be 503 (collapsed)
+      await expect(vaultService.getUserPublicKey('user-key', 'token')).rejects.toThrow(ServiceUnavailableException);
+      await expect(vaultService.getUserPublicKey('user-key', 'token')).rejects.toThrow(
+        'Vault is misconfigured or unavailable',
+      );
     });
   });
 
@@ -259,7 +264,10 @@ describe('VaultService', () => {
       (httpService.axiosRef.post as jest.Mock).mockRejectedValue(error);
 
       const fakeData = new Uint8Array([1, 2, 3]);
-      await expect(vaultService.signAsUser('user-key', fakeData, 'token')).rejects.toThrow(HttpErrorByCode[401]);
+      await expect(vaultService.signAsUser('user-key', fakeData, 'token')).rejects.toThrow(ServiceUnavailableException);
+      await expect(vaultService.signAsUser('user-key', fakeData, 'token')).rejects.toThrow(
+        'Vault is misconfigured or unavailable',
+      );
     });
   });
 
@@ -305,7 +313,10 @@ describe('VaultService', () => {
       (httpService.axiosRef.post as jest.Mock).mockRejectedValue(error);
 
       const fakeData = new Uint8Array([4, 5, 6]);
-      await expect(vaultService.signAsManager(fakeData, 'token')).rejects.toThrow(HttpErrorByCode[500]);
+      await expect(vaultService.signAsManager(fakeData, 'token')).rejects.toThrow(ServiceUnavailableException);
+      await expect(vaultService.signAsManager(fakeData, 'token')).rejects.toThrow(
+        'Vault is misconfigured or unavailable',
+      );
     });
   });
 

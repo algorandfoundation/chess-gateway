@@ -1,68 +1,64 @@
-import { AlgoDidResolver, buildCredoDidDocumentFromKey } from './algo-did.resolver';
-import { DidService } from '../../did/did.service';
+import { AlgoDidResolver } from '../../../libs/credo-did-algo';
+import type { DidAlgoChainReaderPort } from '../../../libs/credo-did-algo';
 
-describe('AlgoDidResolver', () => {
-  // 32-byte ed25519 public key (all zeros) embedded as hex into a canonical
-  // did:algo identifier. Pinned so the multibase encoding is deterministic.
+/**
+ * The package `AlgoDidResolver` always reads from chain via the
+ * supplied `DidAlgoChainReaderPort` — there is no self-describe
+ * fallback and no host-side cache. The spec exercises that contract
+ * with a mock reader.
+ */
+describe('AlgoDidResolver (package)', () => {
   const HEX = '0'.repeat(64);
   const DID = `did:algo:testnet:app:1234:${HEX}`;
-  const publicKey = Uint8Array.from(Buffer.from(HEX, 'hex'));
 
-  const didService = {
-    listRecords: jest.fn(),
-  } as unknown as DidService;
-
-  let resolver: AlgoDidResolver;
-  beforeEach(() => {
-    jest.clearAllMocks();
-    resolver = new AlgoDidResolver(didService);
-  });
+  const buildResolver = (
+    reader: Partial<DidAlgoChainReaderPort> = {},
+  ): { resolver: AlgoDidResolver; resolveDocument: jest.Mock } => {
+    const resolveDocument = jest.fn().mockResolvedValue(null);
+    const r: DidAlgoChainReaderPort = { resolveDocument, ...reader };
+    return { resolver: new AlgoDidResolver(r), resolveDocument };
+  };
 
   it('rejects identifiers that do not match the did:algo shape', async () => {
-    (didService.listRecords as jest.Mock).mockResolvedValue([]);
+    const { resolver, resolveDocument } = buildResolver();
     const r = await resolver.resolve({} as never, 'did:algo:not-real', { method: 'algo' } as never);
     expect(r.didDocument).toBeNull();
     expect(r.didResolutionMetadata.error).toBe('invalidDid');
+    expect(resolveDocument).not.toHaveBeenCalled();
   });
 
-  it('rebuilds the document from the self-described identifier when no local record exists', async () => {
-    (didService.listRecords as jest.Mock).mockResolvedValue([]);
+  it('returns notFound when the chain reader reports no document', async () => {
+    const { resolver, resolveDocument } = buildResolver();
+    const r = await resolver.resolve({} as never, DID, { method: 'algo' } as never);
+    expect(resolveDocument).toHaveBeenCalledWith(DID);
+    expect(r.didDocument).toBeNull();
+    expect(r.didResolutionMetadata.error).toBe('notFound');
+  });
+
+  it('hydrates the on-chain JSON document when present', async () => {
+    const documentJson = {
+      '@context': ['https://www.w3.org/ns/did/v1'],
+      id: DID,
+      verificationMethod: [
+        {
+          id: `${DID}#keys-1`,
+          type: 'Ed25519VerificationKey2020',
+          controller: DID,
+          publicKeyMultibase: 'z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
+        },
+      ],
+      authentication: [`${DID}#keys-1`],
+      assertionMethod: [`${DID}#keys-1`],
+    };
+    const { resolver } = buildResolver({ resolveDocument: jest.fn().mockResolvedValue(documentJson) });
     const r = await resolver.resolve({} as never, DID, { method: 'algo' } as never);
     expect(r.didDocument?.id).toBe(DID);
-    expect(r.didDocument?.verificationMethod?.[0]?.controller).toBe(DID);
     expect(r.didResolutionMetadata.contentType).toBe('application/did+ld+json');
   });
 
-  it('prefers a locally cached document when present', async () => {
-    const expected = buildCredoDidDocumentFromKey(DID, publicKey);
-    (didService.listRecords as jest.Mock).mockResolvedValue([
-      {
-        did: DID,
-        user_id: 'u1',
-        document: JSON.stringify({
-          '@context': ['https://www.w3.org/ns/did/v1'],
-          id: DID,
-          verificationMethod: [
-            {
-              id: `${DID}#keys-1`,
-              type: 'Ed25519VerificationKey2020',
-              controller: DID,
-              publicKeyMultibase: expected.verificationMethod![0].publicKeyMultibase,
-            },
-          ],
-          authentication: [`${DID}#keys-1`],
-        }),
-      },
-    ]);
-    const r = await resolver.resolve({} as never, DID, { method: 'algo' } as never);
-    expect(r.didDocument?.verificationMethod?.[0]?.id).toBe(`${DID}#keys-1`);
-  });
-
-  it('falls back to self-described resolution when the cached document is malformed', async () => {
-    (didService.listRecords as jest.Mock).mockResolvedValue([
-      { did: DID, user_id: 'u1', document: '{not-json' },
-    ]);
-    const r = await resolver.resolve({} as never, DID, { method: 'algo' } as never);
-    expect(r.didDocument?.id).toBe(DID);
+  it('disables Credo-level caching so every resolve hits the method resolver', () => {
+    const { resolver } = buildResolver();
+    expect(resolver.allowsCaching).toBe(false);
+    expect(resolver.allowsLocalDidRecord).toBe(false);
   });
 });

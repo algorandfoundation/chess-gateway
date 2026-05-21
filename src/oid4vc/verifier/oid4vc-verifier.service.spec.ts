@@ -1,11 +1,12 @@
 import { Test } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
-import { getRepositoryToken } from '@nestjs/typeorm';
+import { Oid4vcVerificationSessionRepository } from '../sessions/vault-repository';
 
 import { Oid4vcVerifierService } from './oid4vc-verifier.service';
 import { Oid4vcAgentProvider } from '../agent/oid4vc-agent.provider';
 import { Oid4vcConfig } from '../oid4vc.config';
 import { Oid4vcVerificationSession } from '../entities/oid4vc-verification-session.entity';
+import { CredeblTrustRegistryService } from '../trust-registry/credebl';
 
 describe('Oid4vcVerifierService', () => {
   const mockRepo = {
@@ -45,7 +46,15 @@ describe('Oid4vcVerifierService', () => {
         Oid4vcVerifierService,
         { provide: Oid4vcAgentProvider, useValue: agentProvider },
         { provide: Oid4vcConfig, useValue: config },
-        { provide: getRepositoryToken(Oid4vcVerificationSession), useValue: mockRepo },
+        { provide: Oid4vcVerificationSessionRepository, useValue: mockRepo },
+        {
+          provide: CredeblTrustRegistryService,
+          useValue: {
+            isEnabled: () => false,
+            registerIssuer: jest.fn(),
+            assertIssuerTrusted: jest.fn(async () => true),
+          },
+        },
       ],
     }).compile();
     service = moduleRef.get(Oid4vcVerifierService);
@@ -77,7 +86,6 @@ describe('Oid4vcVerifierService', () => {
       const definition = { id: 'def', input_descriptors: [] };
       const result = await service.createPresentationRequest({
         presentationDefinition: definition,
-        userId: 'user-1',
       });
 
       expect(verifierApi.createAuthorizationRequest).toHaveBeenCalledWith(
@@ -89,7 +97,6 @@ describe('Oid4vcVerifierService', () => {
       expect(result).toMatchObject({
         credoVerificationSessionId: 'credo-v-1',
         authorizationRequest: 'openid4vp://request',
-        userId: 'user-1',
       });
     });
   });

@@ -41,6 +41,11 @@ async function bootstrap() {
 
   app.useGlobalFilters(new ExceptionsFilter());
   app.useGlobalInterceptors(new LoggingInterceptor());
+  // All Nest routes (DID lookups, OID4VC issuer/verifier app surface,
+  // did:key-authenticated payment routes) live under the global `/v1`
+  // prefix. The Credo OID4VCI/OID4VP routers were already mounted above
+  // at their absolute protocol paths, before `setGlobalPrefix`, so they
+  // are unaffected.
   app.setGlobalPrefix('v1');
   app.useGlobalPipes(
     new ValidationPipe({
@@ -67,6 +72,26 @@ async function bootstrap() {
       scheme: 'bearer',
       bearerFormat: 'JWT',
     })
+    // Credential-gated routes (e.g. `POST /v1/did/create/transactions`)
+    // accept a wallet-presented SD-JWT VC via the
+    // `X-Credential-Presentation` header. Register it as an apiKey
+    // scheme so Swagger UI prompts for it under "Authorize".
+    .addApiKey(
+      {
+        type: 'apiKey',
+        name: 'x-credential-presentation',
+        in: 'header',
+        description:
+          'Compact SD-JWT VC presentation that proves possession of a ' +
+          "device-attestation credential bound to the caller's did:key. " +
+          'Obtained by completing the OID4VCI pre-authorized-code flow ' +
+          'advertised by `POST /v1/link/response` and presenting ' +
+          "the issued credential with the holder's `cnf.kid` binding. " +
+          'Required on credential-gated endpoints such as ' +
+          '`POST /v1/did/create/transactions`.',
+      },
+      'x-credential-presentation',
+    )
     .build();
   const document = SwaggerModule.createDocument(app, options, {});
   SwaggerModule.setup('docs', app, document);

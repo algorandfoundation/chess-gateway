@@ -2,38 +2,31 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Updates a key in the .env file if it exists, otherwise appends it.
- * Only works when running in a local/dev environment where the .env file is accessible.
+ * Update (or insert) `key=value` in the project's `.env` file at
+ * the workspace root. Used by **bootstrap scripts only** (Vault
+ * AppRole creation in `vault/development-init.ts`, ad-hoc operator
+ * tooling, etc.) — the running service does **not** write to `.env`.
+ *
+ * Operational state that used to live here (notably the
+ * `DIDAlgoStorage` app id) now lives in Vault KV-v2 under
+ * `secret/intermezzo/...`. Prefer `VaultService.kvWrite` for anything
+ * new.
  */
 export function updateEnvFile(key: string, value: string): void {
-  const envPath = path.join(process.cwd(), '.env');
-  if (!fs.existsSync(envPath)) {
-    console.warn(`.env file not found at ${envPath}, skipping update.`);
-    return;
-  }
-
+  const envPath = path.resolve(process.cwd(), '.env');
+  let content = '';
   try {
-    const envContent = fs.readFileSync(envPath, 'utf-8');
-    const lines = envContent.split(/\r?\n/);
-    let keyFound = false;
-
-    const newLines = lines.map((line) => {
-      // Check for key=value pattern, ignoring comments and whitespace
-      const match = line.match(/^\s*([^#=]+)\s*=\s*(.*)$/);
-      if (match && match[1].trim() === key) {
-        keyFound = true;
-        return `${key}=${value}`;
-      }
-      return line;
-    });
-
-    if (!keyFound) {
-      newLines.push(`${key}=${value}`);
-    }
-
-    fs.writeFileSync(envPath, newLines.join('\n'));
-    console.log(`Successfully updated ${key} in .env`);
-  } catch (err) {
-    console.error(`Failed to update .env file: ${err}`);
+    content = fs.readFileSync(envPath, 'utf-8');
+  } catch {
+    // file may not exist yet; start fresh
   }
+  const line = `${key}=${value}`;
+  const re = new RegExp(`^${key}=.*$`, 'm');
+  if (re.test(content)) {
+    content = content.replace(re, line);
+  } else {
+    if (content.length > 0 && !content.endsWith('\n')) content += '\n';
+    content += line + '\n';
+  }
+  fs.writeFileSync(envPath, content);
 }

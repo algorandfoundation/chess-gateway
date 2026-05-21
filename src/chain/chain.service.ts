@@ -1,9 +1,8 @@
-import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { HttpErrorByCode } from '@nestjs/common/utils/http-error-by-code.util';
 import { HttpService } from '@nestjs/axios';
 import { AxiosResponse } from 'axios';
-import { safeStringify } from '../util';
+import { mapUpstreamError } from '../common/upstream-error';
 import {
   AccountAssetsResponse,
   AssetHolding,
@@ -224,14 +223,7 @@ export class ChainService {
 
       return result.data;
     } catch (error) {
-      if (error.response?.status) {
-        const message =
-          error.response.text ??
-          (typeof error.response.data === 'string' ? error.response.data : safeStringify(error.response.data));
-        throw new HttpErrorByCode[error.response.status](`NodeException: ${message}`);
-      } else {
-        throw new InternalServerErrorException(`NodeException: ${error.message}`);
-      }
+      throw error;
     }
   }
 
@@ -272,12 +264,16 @@ export class ChainService {
   }
 
   async getSuggestedParams(): Promise<TruncatedSuggestedParamsResponse> {
-    const response = await this.makeAlgoNodeRequest('v2/transactions/params', 'GET');
-    const suggestedParams: TruncatedSuggestedParamsResponse = {
-      lastRound: BigInt(response['last-round']),
-      minFee: response['min-fee'],
-    };
-    return suggestedParams;
+    try {
+      const response = await this.makeAlgoNodeRequest('v2/transactions/params', 'GET');
+      const suggestedParams: TruncatedSuggestedParamsResponse = {
+        lastRound: BigInt(response['last-round']),
+        minFee: response['min-fee'],
+      };
+      return suggestedParams;
+    } catch (error) {
+      throw mapUpstreamError('AlgodNode', error);
+    }
   }
 
   /**
@@ -287,27 +283,35 @@ export class ChainService {
    * @returns - The account detail including amount, min balance, and asset holdings.
    */
   async getAccountDetail(public_address: string): Promise<TruncatedAccountResponse> {
-    const response = await this.makeAlgoNodeRequest(`v2/accounts/${public_address}`, 'GET');
+    try {
+      const response = await this.makeAlgoNodeRequest(`v2/accounts/${public_address}`, 'GET');
 
-    Logger.debug(`Account detail response: ${JSON.stringify(response)}`);
+      Logger.debug(`Account detail response: ${JSON.stringify(response)}`);
 
-    const truncatedAccountResponse: TruncatedAccountResponse = {
-      amount: BigInt(response['amount']),
-      minBalance: BigInt(response['min-balance']),
-      assets: response['assets'].map(
-        (asset: any) => ({ assetId: asset['asset-id'], balance: asset['amount'] }) as TruncatedAssetHolding,
-      ),
-    };
-    return truncatedAccountResponse;
+      const truncatedAccountResponse: TruncatedAccountResponse = {
+        amount: BigInt(response['amount']),
+        minBalance: BigInt(response['min-balance']),
+        assets: response['assets'].map(
+          (asset: any) => ({ assetId: asset['asset-id'], balance: asset['amount'] }) as TruncatedAssetHolding,
+        ),
+      };
+      return truncatedAccountResponse;
+    } catch (error) {
+      throw mapUpstreamError('AlgodNode', error);
+    }
   }
 
   // Get Algo Balance, fetch balance from AlgoD
   async getAccountBalance(public_address: string): Promise<bigint> {
-    const response = await this.makeAlgoNodeRequest(`v2/accounts/${public_address}`, 'GET');
+    try {
+      const response = await this.makeAlgoNodeRequest(`v2/accounts/${public_address}`, 'GET');
 
-    Logger.debug(`Account balance response: ${JSON.stringify(response)}`);
+      Logger.debug(`Account balance response: ${JSON.stringify(response)}`);
 
-    return BigInt(response['amount']);
+      return BigInt(response['amount']);
+    } catch (error) {
+      throw mapUpstreamError('AlgodNode', error);
+    }
   }
 
   /**
@@ -318,11 +322,15 @@ export class ChainService {
    * @returns - The asset holding for the account and asset ID, or null if not found.
    */
   async getAccountAssetHoldings(public_address: string): Promise<AssetHolding[]> {
-    const response: AccountAssetsResponse = await this.makeAlgoNodeRequest(`v2/accounts/${public_address}`, 'GET');
+    try {
+      const response: AccountAssetsResponse = await this.makeAlgoNodeRequest(`v2/accounts/${public_address}`, 'GET');
 
-    Logger.debug(`Account asset holdings response: ${JSON.stringify(response)}`);
+      Logger.debug(`Account asset holdings response: ${JSON.stringify(response)}`);
 
-    return response.assets;
+      return response.assets;
+    } catch (error) {
+      throw mapUpstreamError('AlgodNode', error);
+    }
   }
 
   /**
@@ -339,14 +347,11 @@ export class ChainService {
       const truncatedAccountAssetResponse: TruncatedAccountAssetResponse = {};
       return truncatedAccountAssetResponse;
     } catch (error) {
-      if (error.response?.statusCode) {
-        // if 404, account has no asset, we return null
-        if (error.response.statusCode == 404) {
-          return null;
-        }
-        throw error;
+      const status = error.response?.status;
+      if (status === 404) {
+        return null;
       }
-      throw error;
+      throw mapUpstreamError('AlgodNode', error);
     }
   }
 
@@ -356,8 +361,12 @@ export class ChainService {
    * @returns - last round number
    */
   async getLastRound(): Promise<bigint> {
-    const response = await this.makeAlgoNodeRequest('v2/status', 'GET');
-    return BigInt(response['last-round']);
+    try {
+      const response = await this.makeAlgoNodeRequest('v2/status', 'GET');
+      return BigInt(response['last-round']);
+    } catch (error) {
+      throw mapUpstreamError('AlgodNode', error);
+    }
   }
 
   /**
@@ -367,13 +376,17 @@ export class ChainService {
    * @returns - The transaction ID of the submitted transaction.
    */
   async submitTransaction(txnOrtxns: Uint8Array | Uint8Array[]): Promise<TruncatedPostTransactionsResponse> {
-    const data = txnOrtxns instanceof Uint8Array ? Buffer.from(txnOrtxns) : Buffer.concat(txnOrtxns);
-    const response = await this.makeAlgoNodeRequest('v2/transactions', 'POST', data);
-    const postTransactionResponse: TruncatedPostTransactionsResponse = {
-      txid: response['txId'],
-    };
+    try {
+      const data = txnOrtxns instanceof Uint8Array ? Buffer.from(txnOrtxns) : Buffer.concat(txnOrtxns);
+      const response = await this.makeAlgoNodeRequest('v2/transactions', 'POST', data);
+      const postTransactionResponse: TruncatedPostTransactionsResponse = {
+        txid: response['txId'],
+      };
 
-    await this.waitConfirmation(postTransactionResponse.txid);
-    return postTransactionResponse;
+      await this.waitConfirmation(postTransactionResponse.txid);
+      return postTransactionResponse;
+    } catch (error) {
+      throw mapUpstreamError('AlgodNode', error);
+    }
   }
 }

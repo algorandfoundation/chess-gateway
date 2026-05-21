@@ -1,11 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { WalletModule } from './wallet.module';
 import { Wallet } from './wallet.controller';
 import { WalletService } from './wallet.service';
-import { DidRecord } from '../did/entities/did-record.entity';
 
 // Optionally, if you need to mock dependencies from the Vault and Chain modules,
 // you can create dummy modules or mocks. For this simple module test,
@@ -19,14 +17,8 @@ describe('WalletModule', () => {
       imports: [
         // Importing ConfigModule with defaults to prevent errors due to missing env vars.
         ConfigModule.forRoot({ isGlobal: true }),
-        // In-memory sqlite to satisfy `DidModule`'s `forFeature(DidRecord)` —
-        // the wallet module transitively depends on it through the DID publisher.
-        TypeOrmModule.forRoot({
-          type: 'sqlite',
-          database: ':memory:',
-          entities: [DidRecord],
-          synchronize: true,
-        }),
+        // `DidModule` is now stateless (no repository), so no TypeORM
+        // bootstrap is required for the wallet wiring to compile.
         HttpModule,
         // Import the WalletModule, which already imports VaultModule and ChainModule.
         WalletModule,

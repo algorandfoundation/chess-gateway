@@ -1,7 +1,9 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { Oid4vcIssuanceSessionRepository, Oid4vcVerificationSessionRepository } from './sessions/vault-repository';
 
+import { AlgoDidRegistrar } from '../../libs/credo-did-algo';
+import { vaultSigningRegistry } from '../../libs/credo-vault-wallet';
 import { Oid4vcConfig } from './oid4vc.config';
 import { Oid4vcAgentProvider } from './agent/oid4vc-agent.provider';
 import { Oid4vcIssuerService } from './issuer/oid4vc-issuer.service';
@@ -10,71 +12,71 @@ import { Oid4vcVerifierService } from './verifier/oid4vc-verifier.service';
 import { Oid4vcVerifierController } from './verifier/oid4vc-verifier.controller';
 import { Oid4vcIssuanceSession } from './entities/oid4vc-issuance-session.entity';
 import { Oid4vcVerificationSession } from './entities/oid4vc-verification-session.entity';
-import { Oid4vcVaultKeyBinding } from './entities/oid4vc-vault-key-binding.entity';
-import { Oid4vcUserDeviceManifest } from './entities/oid4vc-user-device-manifest.entity';
-import { Oid4vcUserDeviceManifestRevision } from './entities/oid4vc-user-device-manifest-revision.entity';
 import { DidModule } from '../did/did.module';
 import { VaultModule } from '../vault/vault.module';
-import { AuthModule } from '../auth/auth.module';
 import { AlgoVaultTokenProvider } from './algo/algo-vault-token.provider';
-import { DeviceManifestService } from './devices/device-manifest.service';
-import { DeviceManifestController } from './devices/device-manifest.controller';
+import { DidAlgoChainAdapter } from './algo/did-algo-chain.adapter';
+import { AlgoDidResolver } from './algo/algo-did.resolver';
+import { VaultKeyProvisioningAdapter } from './algo/vault-key-provisioning.adapter';
+import { CredeblTrustRegistryService } from './trust-registry/credebl';
+import { Oid4vcSessionMirrorService } from './sessions/oid4vc-session-mirror.service';
 
 /**
- * Standalone Nest module exposing OID4VCI (issuance) and OID4VP (verification)
- * capabilities backed by a Credo (`@credo-ts/openid4vc`) agent.
+ * Standalone Nest module exposing OID4VCI (issuance) and OID4VP
+ * (verification) capabilities backed by a Credo (`@credo-ts/openid4vc`)
+ * agent.
  *
- * Wiring requirements:
- * - `TypeOrmModule.forRoot` must already be configured by the host app.
- * - The Credo Express routers exposed by `Oid4vcAgentProvider` must be mounted
- *   on the global Express adapter from `main.ts`. Example:
+ * Post‑v2 wiring:
+ *   - No device-manifest storage and no vault-key-binding table — the
+ *     only Vault binding (the manager's) lives in-memory inside
+ *     `Oid4vcAgentProvider`.
+ *   - No Better-Auth / `AuthModule` dependency inside this module. The
+ *     OID4VC HTTP surface is gated by the global manager `AuthGuard`
+ *     (JWT) mounted by the host application.
  *
- *     const provider = app.get(Oid4vcAgentProvider);
- *     const cfg = app.get(Oid4vcConfig);
- *     app.use(cfg.issuerPath, provider.issuerRouter);
- *     app.use(cfg.verifierPath, provider.verifierRouter);
- *
- *   This must happen *before* `app.listen` and *outside* the global `/v1`
- *   prefix so wallets reach the protocol endpoints at the URLs declared in
- *   the issuer/verifier metadata.
+ * Host responsibilities:
+ *   - `TypeOrmModule.forRoot` must already be configured.
+ *   - The Credo Express routers exposed by `Oid4vcAgentProvider` must
+ *     be mounted on the global Express adapter from `main.ts` *before*
+ *     `setGlobalPrefix` and `app.listen`.
  */
 @Module({
   imports: [
     ConfigModule,
-    TypeOrmModule.forFeature([
-      Oid4vcIssuanceSession,
-      Oid4vcVerificationSession,
-      Oid4vcVaultKeyBinding,
-      Oid4vcUserDeviceManifest,
-      Oid4vcUserDeviceManifestRevision,
-    ]),
-    // DidModule + VaultModule give the AlgoDidRegistrar/AlgoDidResolver the
-    // existing on-chain DID publication path and Vault access. Importing
-    // them keeps the OID4VC subsystem decoupled from `app.module.ts`'s
-    // assembly order: Nest will wire the same DidService instance whether
-    // the host imports DidModule directly or transitively through here.
-    DidModule,
+    forwardRef(() => DidModule),
     VaultModule,
-    // AuthModule provides AuthService so the issuer controller can map a
-    // Better-Auth session (`session.user.email`) to the vault player id
-    // under which the on-chain DID is keyed.
-    AuthModule,
   ],
-  controllers: [Oid4vcIssuerController, Oid4vcVerifierController, DeviceManifestController],
+  controllers: [Oid4vcIssuerController, Oid4vcVerifierController],
   providers: [
     Oid4vcConfig,
     AlgoVaultTokenProvider,
+    DidAlgoChainAdapter,
+    AlgoDidResolver,
+    VaultKeyProvisioningAdapter,
+    {
+      // The package registrar is host-agnostic — it knows nothing
+      // about Nest, Vault, or our DidService. We compose it here from
+      // the host adapters (chain writer + key provisioning) plus the
+      // KMS-binding registry from credo-vault-wallet so Credo signing
+      // requests for the manager DID route back to the host's Vault.
+      provide: AlgoDidRegistrar,
+      useFactory: (chain: DidAlgoChainAdapter, keyProvisioning: VaultKeyProvisioningAdapter) => {
+        const logger = new Logger(AlgoDidRegistrar.name);
+        return new AlgoDidRegistrar(chain, keyProvisioning, {
+          keyRefRegistry: vaultSigningRegistry,
+          logger,
+        });
+      },
+      inject: [DidAlgoChainAdapter, VaultKeyProvisioningAdapter],
+    },
+    CredeblTrustRegistryService,
     Oid4vcAgentProvider,
     Oid4vcIssuerService,
     Oid4vcVerifierService,
-    DeviceManifestService,
+    Oid4vcIssuanceSessionRepository,
+    Oid4vcVerificationSessionRepository,
+    Oid4vcSessionMirrorService,
   ],
-  exports: [
-    Oid4vcConfig,
-    Oid4vcAgentProvider,
-    Oid4vcIssuerService,
-    Oid4vcVerifierService,
-    DeviceManifestService,
-  ],
+  exports: [Oid4vcConfig, Oid4vcAgentProvider, Oid4vcIssuerService, Oid4vcVerifierService, CredeblTrustRegistryService],
 })
 export class Oid4vcModule {}

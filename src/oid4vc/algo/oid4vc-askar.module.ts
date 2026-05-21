@@ -1,16 +1,11 @@
-import {
-  AgentContext,
-  CredoError,
-  InjectionSymbols,
-  Module,
-} from '@credo-ts/core';
+import { AgentContext, CredoError, InjectionSymbols, Module } from '@credo-ts/core';
 import type { DependencyManager } from '@credo-ts/core';
 import { AskarStorageService } from '@credo-ts/askar';
 import { AskarModuleConfig, type AskarModuleConfigOptions } from '@credo-ts/askar/build/AskarModuleConfig';
 import { AskarStoreSymbol, importAskar } from '@credo-ts/askar/build/utils/importAskar';
 import { assertAskarWallet } from '@credo-ts/askar/build/utils/assertAskarWallet';
 
-import { VaultAskarWallet } from './vault-askar-wallet';
+import { VaultAskarWallet } from '../../../libs/credo-vault-wallet';
 
 /**
  * Drop-in replacement for `@credo-ts/askar`'s `AskarModule` that registers
@@ -49,9 +44,7 @@ export class Oid4vcAskarModule implements Module {
     dependencyManager.registerContextScoped(InjectionSymbols.Wallet, VaultAskarWallet);
 
     if (dependencyManager.isRegistered(InjectionSymbols.StorageService)) {
-      throw new CredoError(
-        'Oid4vcAskarModule: there is an instance of StorageService already registered.',
-      );
+      throw new CredoError('Oid4vcAskarModule: there is an instance of StorageService already registered.');
     }
     dependencyManager.registerSingleton(InjectionSymbols.StorageService, AskarStorageService);
   }

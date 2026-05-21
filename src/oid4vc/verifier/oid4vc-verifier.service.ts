@@ -1,12 +1,12 @@
 import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Oid4vcVerificationSessionRepository } from '../sessions/vault-repository';
 
 import type { DifPresentationExchangeDefinitionV2 } from '@credo-ts/core';
 
 import { Oid4vcAgentProvider } from '../agent/oid4vc-agent.provider';
 import { Oid4vcConfig } from '../oid4vc.config';
 import { Oid4vcVerificationSession } from '../entities/oid4vc-verification-session.entity';
+import { CredeblTrustRegistryService } from '../trust-registry/credebl';
 
 /**
  * Encapsulates the OID4VP / SIOPv2 verifier side of the agent.
@@ -27,8 +27,8 @@ export class Oid4vcVerifierService implements OnModuleInit {
   constructor(
     private readonly agentProvider: Oid4vcAgentProvider,
     private readonly config: Oid4vcConfig,
-    @InjectRepository(Oid4vcVerificationSession)
-    private readonly sessionRepo: Repository<Oid4vcVerificationSession>,
+    private readonly sessionRepo: Oid4vcVerificationSessionRepository,
+    private readonly trustRegistry: CredeblTrustRegistryService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -63,7 +63,6 @@ export class Oid4vcVerifierService implements OnModuleInit {
    */
   async createPresentationRequest(input: {
     presentationDefinition: Record<string, unknown>;
-    userId?: string;
   }): Promise<Oid4vcVerificationSession> {
     const agent = await this.agentProvider.getAgent();
     await this.ensureVerifier();
@@ -81,7 +80,6 @@ export class Oid4vcVerifierService implements OnModuleInit {
     const record = this.sessionRepo.create({
       credoVerificationSessionId: verificationSession.id,
       verifierId: Oid4vcVerifierService.VERIFIER_ID,
-      userId: input.userId,
       authorizationRequest,
       presentationDefinition: input.presentationDefinition,
       state: verificationSession.state,
@@ -118,6 +116,10 @@ export class Oid4vcVerifierService implements OnModuleInit {
           presentations: verified.presentationExchange?.presentations,
           submission: verified.presentationExchange?.submission,
         } as Record<string, unknown>;
+        // Trust-registry gate: per `TRUST_MODEL.md`, an OID4VP session
+        // must not be considered valid unless the credential's issuer
+        // is trusted by CREDEBL. No-op when CREDEBL_ENABLED=false.
+        await this.assertPresentationsTrusted(verified.presentationExchange?.presentations);
       } catch {
         // not yet verified - that's fine, just return current state
       }
@@ -131,4 +133,41 @@ export class Oid4vcVerifierService implements OnModuleInit {
   async listSessions(): Promise<Oid4vcVerificationSession[]> {
     return this.sessionRepo.find({ order: { createdAt: 'DESC' } });
   }
+
+  /**
+   * Walk every verified presentation in the session and ask CREDEBL
+   * whether the credential's issuer DID is trusted. The exact shape of
+   * `presentations` varies by format (SD-JWT VC, W3C JWT VC, W3C
+   * VP-JWT); we extract issuer DIDs defensively and skip anything we
+   * cannot parse — those land in the existing claims for downstream
+   * inspection. Throws when `CREDEBL_VERIFY_FAIL_CLOSED=true` and any
+   * issuer is rejected.
+   */
+  private async assertPresentationsTrusted(presentations: unknown): Promise<void> {
+    if (!this.trustRegistry.isEnabled()) return;
+    if (!Array.isArray(presentations)) return;
+    const issuers = new Set<string>();
+    for (const p of presentations) {
+      const did = extractIssuerDid(p);
+      if (did) issuers.add(did);
+    }
+    for (const did of issuers) {
+      await this.trustRegistry.assertIssuerTrusted(did);
+    }
+  }
+}
+
+function extractIssuerDid(presentation: unknown): string | undefined {
+  if (!presentation || typeof presentation !== 'object') return undefined;
+  const p = presentation as Record<string, unknown>;
+  // SD-JWT VC: top-level `iss`.
+  if (typeof p.iss === 'string') return p.iss;
+  // W3C VC payload nested under `vc` / `credentialSubject`.
+  const issuer = (p.issuer ?? (p.vc as Record<string, unknown> | undefined)?.issuer) as
+    | string
+    | { id?: string }
+    | undefined;
+  if (typeof issuer === 'string') return issuer;
+  if (issuer && typeof issuer === 'object' && typeof issuer.id === 'string') return issuer.id;
+  return undefined;
 }

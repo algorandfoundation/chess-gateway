@@ -97,10 +97,7 @@ export class Oid4vcConfig {
    * also the userId we publish/look up under {@link DidService}.
    */
   get managerUserId(): string {
-    return this.config.get<string>(
-      'OID4VC_MANAGER_USER_ID',
-      this.config.get<string>('VAULT_MANAGER_KEY', 'manager'),
-    );
+    return this.config.get<string>('OID4VC_MANAGER_USER_ID', this.config.get<string>('VAULT_MANAGER_KEY', 'manager'));
   }
 
   /**
@@ -115,7 +112,43 @@ export class Oid4vcConfig {
   get managerTransitPath(): string {
     return this.config.get<string>('VAULT_TRANSIT_MANAGERS_PATH', 'pawn/managers');
   }
-
+  /**
+   * CREDEBL trust-registry integration (M2). When disabled (default),
+   * the registry is not consulted on boot or on verification — the
+   * service behaves exactly as it did before M2 landed.
+   *
+   * Env vars:
+   * - CREDEBL_ENABLED   `true|false`  (default: `false`)
+   * - CREDEBL_BASE_URL  e.g. `https://credebl.example.org`
+   * - CREDEBL_ORG_ID    Org/tenant id the manager belongs to.
+   * - CREDEBL_API_KEY   API key authorised for that org.
+   * - CREDEBL_ECOSYSTEM (optional) Ecosystem id to scope registration.
+   * - CREDEBL_VERIFY_FAIL_CLOSED `true|false` — when `true` (default
+   *   when enabled), `Oid4vcVerifierService` rejects sessions whose
+   *   issuer DID is not trusted by CREDEBL. When `false`, the check
+   *   only annotates the session and never blocks it.
+   */
+  get credeblEnabled(): boolean {
+    const v = this.config.get<string>('CREDEBL_ENABLED', 'false');
+    return v === 'true' || v === '1';
+  }
+  get credeblBaseUrl(): string {
+    return (this.config.get<string>('CREDEBL_BASE_URL', '') || '').replace(/\/+$/, '');
+  }
+  get credeblOrgId(): string {
+    return this.config.get<string>('CREDEBL_ORG_ID', '');
+  }
+  get credeblApiKey(): string {
+    return this.config.get<string>('CREDEBL_API_KEY', '');
+  }
+  get credeblEcosystem(): string | undefined {
+    const v = this.config.get<string>('CREDEBL_ECOSYSTEM', '');
+    return v ? v : undefined;
+  }
+  get credeblVerifyFailClosed(): boolean {
+    const v = this.config.get<string>('CREDEBL_VERIFY_FAIL_CLOSED', 'true');
+    return v !== 'false' && v !== '0';
+  }
   private normalisePath(path: string): string {
     if (!path.startsWith('/')) path = `/${path}`;
     return path.replace(/\/+$/, '');

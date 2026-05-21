@@ -38,6 +38,29 @@ services:
       - default
       - algokit_sandbox
 
+  # CREDEBL trust registry (M2-b scaffold).
+  #
+  # Opt-in: `docker compose --profile credebl up`. Pinning a vendored
+  # fork that wires the `libs/credo-did-algo` plugin into CREDEBL's
+  # agent layer (so it accepts `did:algo` on issuer onboarding and
+  # schema registration) is the remaining work for M2-b — once the
+  # fork is published, override `CREDEBL_IMAGE` to its tag and the
+  # full M2 loop closes. See `src/oid4vc/TRUST_MODEL.md` → M2.
+  credebl:
+    image: ${CREDEBL_IMAGE:-ghcr.io/credebl/platform:latest}
+    container_name: credebl
+    profiles:
+      - credebl
+    env_file:
+      - .env
+    environment:
+      # Forwarded to Intermezzo so `CredeblTrustRegistryService` boots
+      # against the local stack when `CREDEBL_ENABLED=true`.
+      CREDEBL_BASE_URL: http://credebl:${CREDEBL_HOST_PORT:-3100}
+    ports:
+      - "${CREDEBL_HOST_PORT:-3100}:3100"
+    restart: unless-stopped
+
 networks:
   algokit_sandbox:
     external: true

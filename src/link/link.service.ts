@@ -1,333 +1,258 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
-import { VerificationService } from './verification/verification.service';
-import { LinkVerification } from './verification/entities/link-verification.entity';
-import { AuthService } from '../auth/auth.service';
+import { BadRequestException, Injectable, Logger, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { VaultService } from '../vault/vault.service';
+import { randomBytes, verify as cryptoVerify, createPublicKey } from 'crypto';
 import { DidService } from '../did/did.service';
-import { DeviceManifestService } from '../oid4vc/devices/device-manifest.service';
-import type { UploadDeviceManifestDto } from '../oid4vc/dto/upload-device-manifest.dto';
+import { decodeDidKeyEd25519 } from '../did/did-key';
+import { Oid4vcIssuerService } from '../oid4vc/issuer/oid4vc-issuer.service';
+import { Oid4vcIssuanceSession } from '../oid4vc/entities/oid4vc-issuance-session.entity';
+import { ManagerVaultTokenProvider } from '../auth/manager-vault-token.provider';
+import { VaultService } from '../vault/vault.service';
 
+const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+/**
+ * Vault KV-v2 folder under the platform mount (default `secret`)
+ * where single-use attestation challenges live. Each challenge is a
+ * KV entry keyed by its server-issued nonce. Challenges are deleted
+ * outright on redemption / expiry — there is no audit trail beyond
+ * Vault's own version history.
+ */
+export const ATTESTATION_CHALLENGES_KV_FOLDER = 'intermezzo/attestations/challenges';
+
+/**
+ * Credential configuration id minted by this service. Must be present
+ * in `DEFAULT_CREDENTIAL_CONFIGURATIONS` on the issuer.
+ */
+export const DEVICE_ATTESTATION_CREDENTIAL_ID = 'device-attestation-credential';
+
+/**
+ * Shape of a stored challenge entry in Vault KV.
+ */
+interface ChallengeEntry extends Record<string, unknown> {
+  didKey: string;
+  /** ISO-8601 timestamp. */
+  expiresAt: string;
+  /** ISO-8601 timestamp; absent until the challenge is redeemed. */
+  consumedAt?: string;
+  /** ISO-8601 timestamp; recorded for the audit-of-last-resort. */
+  issuedAt: string;
+}
+
+/**
+ * Stateful, two-step device-attestation handshake. Owns the challenge
+ * lifecycle and, on successful redemption, mints a per-user `did:algo`
+ * (controlled by the caller's `did:key`) and creates an OID4VCI offer
+ * for the {@link DEVICE_ATTESTATION_CREDENTIAL_ID} credential pinned
+ * to the same `did:key`.
+ *
+ * No PII is persisted. The service stores only:
+ *   - the public `did:key`,
+ *   - a server-issued opaque nonce,
+ *   - the challenge lifecycle timestamps,
+ * and it stores them in **Vault KV-v2** under
+ * {@link ATTESTATION_CHALLENGES_KV_FOLDER} — not in a sidecar
+ * database — so the platform footprint is "Vault and an Algorand
+ * node, nothing else".
+ */
 @Injectable()
 export class LinkService {
   private readonly logger = new Logger(LinkService.name);
+
   constructor(
-    private readonly verificationService: VerificationService,
-    private readonly authService: AuthService,
-    private readonly configService: ConfigService,
-    private readonly vaultService: VaultService,
     private readonly didService: DidService,
-    private readonly deviceManifestService: DeviceManifestService,
+    private readonly issuerService: Oid4vcIssuerService,
+    private readonly managerToken: ManagerVaultTokenProvider,
+    private readonly vaultService: VaultService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
-   * Best-effort seed of the wallet's did:key device manifest on the
-   * first attestation. Failures are logged but do not block the link
-   * flow (wallets that don't yet send a manifest must still be able
-   * to link). See `src/oid4vc/DISCOVERY.md` — "First-attestation
-   * seeding".
+   * Validates the inbound device-attestation blob. This is the
+   * single place in the service where device-platform attestation is
+   * enforced — once the credential is minted in {@link redeem}, the
+   * credential's signature transitively vouches for this check on
+   * every subsequent wallet-authenticated call
+   * (`CredentialAuthGuard`).
+   *
+   * Today's implementation is a placeholder: it requires a non-empty
+   * opaque blob of reasonable length unless
+   * `DEVICE_ATTESTATION=disabled` is set (local development only).
+   * Production deployments must replace this method with a real App
+   * Attest / Play Integrity verifier:
+   *
+   *   - iOS: validate Apple's App Attest assertion against the
+   *     previously registered key id and the request nonce.
+   *   - Android: verify Play Integrity verdicts via Google's API and
+   *     pin the package + cert hash.
    */
-  private async seedDeviceManifest(
-    userId: string,
-    manifest: UploadDeviceManifestDto,
-  ): Promise<void> {
-    try {
-      const result = await this.deviceManifestService.upsertManifest({
-        userId,
-        didKey: manifest.didKey,
-        version: manifest.version,
-        signedAt: manifest.signedAt,
-        didDocument: manifest.didDocument,
-        signature: manifest.signature,
-        // Link-attestation has just verified device integrity, so this
-        // is the one place we allow a previously-unseen did:key to
-        // create a manifest row.
-        trustedSeed: true,
-      });
-      this.logger.log(
-        `Seeded device manifest userId=${userId} didKey=${manifest.didKey} version=${manifest.version} created=${result.created}`,
-      );
-    } catch (error: any) {
+  private verifyDeviceAttestation(deviceAttestation: string | undefined, nonce: string): void {
+    const mode = this.config.get<string>('DEVICE_ATTESTATION') ?? 'placeholder';
+    if (mode === 'disabled') {
       this.logger.warn(
-        `Failed to seed device manifest userId=${userId} didKey=${manifest?.didKey}: ${error?.message}`,
+        'DEVICE_ATTESTATION=disabled — accepting attestation redeem without device-attestation validation. ' +
+          'Do not run like this in production.',
+      );
+      return;
+    }
+    if (!deviceAttestation || typeof deviceAttestation !== 'string' || deviceAttestation.length < 16) {
+      throw new UnauthorizedException(
+        'Missing or malformed deviceAttestation. Attestation redeem requires a signed device-platform ' +
+          'attestation (Apple App Attest / Play Integrity).',
       );
     }
+    // The `nonce` is in scope so a real verifier can pin the
+    // attestation to the same challenge the wallet signed. The
+    // placeholder body does not consume it; explicitly referencing it
+    // keeps the parameter intentional under strict-no-unused.
+    void nonce;
+  }
+
+  private kvPathFor(nonce: string): string {
+    // The nonce is base64url (no `/`), so we can splice it directly
+    // into the KV path without sanitisation.
+    return `${ATTESTATION_CHALLENGES_KV_FOLDER}/${nonce}`;
   }
 
   /**
-   * Ensure the player has an on-chain DID document that reflects the
-   * freshly linked wallet under `alsoKnownAs`.
-   *
-   * - If the player already has a document, force-republish it so the
-   *   linked wallet shows up.
-   * - If the player has *no* on-chain document yet (e.g. they registered
-   *   but the manager hadn't provisioned one yet), provision it now —
-   *   linking is exactly the moment we want the on-chain identity to
-   *   exist.
-   *
-   * `publishUserDid` itself serialises concurrent invocations per user,
-   * so a wallet that retries the link request will not race itself into
-   * a "transaction already in ledger" error.
+   * Mints a single-use challenge bound to the caller's `did:key`.
+   * Also opportunistically prunes expired entries so the KV folder
+   * doesn't grow unbounded under load.
    */
-  private async republishDidWithLink(
-    playerId: string,
-    identityPublicKey?: Uint8Array | null,
-  ): Promise<void> {
-    const roleId = this.configService.get<string>('VAULT_ROLE_ID');
-    const secretId = this.configService.get<string>('VAULT_SECRET_ID');
-    const token = await this.vaultService.getTokenWithRole(roleId, secretId);
-    const publicKey = await this.vaultService.getUserPublicKey(playerId, token);
-    const hasDoc = await this.didService.hasOnChainDocument(new Uint8Array(publicKey));
-    await this.didService.publishUserDid({
-      userId: playerId,
-      publicKey: new Uint8Array(publicKey),
-      vaultToken: token,
-      // Republish if a doc already exists; provision it for first-time
-      // linkers who have no on-chain document yet.
-      force: hasDoc,
-      // The wallet's primary device-held identity key, surfaced as
-      // `#keys-2`. Passed explicitly so we don't need to depend on the
-      // device-manifest table being keyed by the same id (it's keyed
-      // by Better-Auth `userId`, whereas the DID is keyed by the vault
-      // player id).
-      identityPublicKey: identityPublicKey ?? null,
-    });
-    this.logger.log(
-      hasDoc
-        ? `Republished DID document for player ${playerId} with linked wallet.`
-        : `Provisioned DID document for player ${playerId} on first link.`,
+  async issueChallenge(didKey: string): Promise<{ nonce: string; expiresAt: Date }> {
+    if (!didKey.startsWith('did:key:')) {
+      throw new BadRequestException('Caller did:key is required to issue a challenge');
+    }
+    const token = await this.managerToken.getToken();
+    await this.pruneExpired(token);
+    const nonce = randomBytes(32).toString('base64url');
+    const issuedAt = new Date();
+    const expiresAt = new Date(issuedAt.getTime() + CHALLENGE_TTL_MS);
+    const entry: ChallengeEntry = {
+      didKey,
+      expiresAt: expiresAt.toISOString(),
+      issuedAt: issuedAt.toISOString(),
+    };
+    await this.vaultService.kvWrite(this.kvPathFor(nonce), entry, token);
+    this.logger.log(`attestation: issued challenge didKey=${didKey} expiresAt=${expiresAt.toISOString()}`);
+    return { nonce, expiresAt };
+  }
+
+  /**
+   * Verifies a signed challenge, mints a per-user `did:algo`, and
+   * creates the OID4VCI offer. Returns the offer URI so the wallet
+   * can immediately redeem it without a second round-trip.
+   */
+  async redeem(input: {
+    didKey: string;
+    nonce: string;
+    signatureB64: string;
+    deviceAttestation?: string;
+  }): Promise<{ issuanceSession: Oid4vcIssuanceSession }> {
+    const { didKey, nonce, signatureB64, deviceAttestation } = input;
+    this.verifyDeviceAttestation(deviceAttestation, nonce);
+    const token = await this.managerToken.getToken();
+    const path = this.kvPathFor(nonce);
+    const entry = await this.vaultService.kvRead<ChallengeEntry>(path, token);
+    if (!entry) throw new NotFoundException('Unknown attestation challenge');
+    if (entry.didKey !== didKey) {
+      throw new BadRequestException('Challenge belongs to a different did:key');
+    }
+    if (entry.consumedAt) {
+      throw new BadRequestException('Challenge has already been consumed');
+    }
+    const expiresAt = new Date(entry.expiresAt);
+    if (expiresAt.getTime() < Date.now()) {
+      throw new BadRequestException('Challenge has expired');
+    }
+
+    let publicKey: Uint8Array;
+    try {
+      publicKey = decodeDidKeyEd25519(didKey);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+    const signature = Buffer.from(signatureB64, 'base64');
+    const verified = cryptoVerify(
+      null,
+      Buffer.from(nonce, 'utf8'),
+      { key: spkiFromEd25519(publicKey), format: 'der', type: 'spki' },
+      signature,
     );
+    if (!verified) {
+      throw new BadRequestException('Challenge signature does not verify against the caller did:key');
+    }
+
+    // Mark consumed *before* the chain write so a partial failure
+    // does not let the same nonce be replayed against a different
+    // outcome. The caller can simply request a fresh challenge.
+    const consumed: ChallengeEntry = { ...entry, consumedAt: new Date().toISOString() };
+    await this.vaultService.kvWrite(path, consumed, token);
+
+    // Attestation is now a pure credential-issuance handshake. The
+    // on-chain `DIDAlgoStorage` contract is deployed lazily by the
+    // wallet itself via `POST /v1/did/create/{transactions,submit}`
+    // (creator = the user's `did:key`-derived address; the host only
+    // sponsors fees and account min-balance). That decision pins
+    // signing authority for every subsequent write to the wallet
+    // alone, with no manager-side capability over the resulting DID.
+    const attestedAt = new Date().toISOString();
+    this.logger.log(`attestation: redeemed challenge didKey=${didKey}`);
+
+    const issuanceSession = await this.issuerService.createOffer({
+      credentialConfigurationIds: [DEVICE_ATTESTATION_CREDENTIAL_ID],
+      holderDidKey: didKey,
+      issuanceMetadata: {
+        did_key: didKey,
+        attested_at: attestedAt,
+      },
+    });
+
+    // Best-effort cleanup: the challenge has been redeemed, its row
+    // serves no further purpose. Failures are non-fatal — `pruneExpired`
+    // will sweep it on the next `issueChallenge`.
+    try {
+      await this.vaultService.kvDelete(path, token);
+    } catch (e) {
+      this.logger.warn(`attestation: post-redeem KV cleanup failed: ${(e as Error).message}`);
+    }
+
+    return { issuanceSession };
   }
 
   /**
-   * Extract the wallet's primary device-held ed25519 identity public
-   * key from the supplied manifest payload. Returns `null` when the
-   * manifest is absent or malformed (callers fall back to a
-   * `#keys-1`-only DID document, which is the legacy behaviour).
-   *
-   * The extraction reuses {@link DeviceManifestService.extractPrimaryEd25519Key}
-   * so the validation rules (multibase decoding, multicodec prefix,
-   * key-length, primary-VM identification) stay in lockstep with the
-   * manifest persistence path.
+   * Best-effort cleanup of stale challenges. Runs inline on every
+   * `issueChallenge`; we list the folder, read each entry, and delete
+   * anything past its `expiresAt`. The folder is expected to stay
+   * small because every entry has a 5-minute TTL.
    */
-  private extractIdentityPublicKey(
-    manifest?: UploadDeviceManifestDto,
-  ): Uint8Array | null {
-    if (!manifest) return null;
+  private async pruneExpired(token: string): Promise<void> {
     try {
-      return new Uint8Array(
-        this.deviceManifestService.extractPrimaryEd25519Key(manifest.didKey, manifest.didDocument),
+      const nonces = await this.vaultService.kvList(ATTESTATION_CHALLENGES_KV_FOLDER, token);
+      const now = Date.now();
+      await Promise.all(
+        nonces.map(async (nonce) => {
+          const path = this.kvPathFor(nonce);
+          try {
+            const entry = await this.vaultService.kvRead<ChallengeEntry>(path, token);
+            if (!entry) return;
+            const expiresAt = new Date(entry.expiresAt).getTime();
+            if (Number.isFinite(expiresAt) && expiresAt < now - CHALLENGE_TTL_MS) {
+              await this.vaultService.kvDelete(path, token);
+            }
+          } catch (e) {
+            this.logger.warn(`attestation: prune failed for ${nonce}: ${(e as Error).message}`);
+          }
+        }),
       );
-    } catch (error: any) {
-      this.logger.warn(
-        `Could not extract identity public key from device manifest: ${error?.message}`,
-      );
-      return null;
+    } catch (e) {
+      this.logger.warn(`attestation: pruning expired challenges failed: ${(e as Error).message}`);
     }
   }
+}
 
-  /**
-   * Links a device and wallet by verifying app integrity, associating the account, and linking the wallet.
-   * @param userId The ID of the authenticated user.
-   * @param email The user's email address.
-   * @param walletAddress The blockchain wallet address to link.
-   * @param integrityData Data for app integrity verification.
-   * @returns The updated LinkVerification.
-   */
-  async linkResponse(
-    userId: string,
-    email: string,
-    walletAddress: string,
-    integrityData: { integrityToken?: string; attestationObject?: string; keyId?: string },
-    challenge: string,
-    deviceManifest?: UploadDeviceManifestDto,
-  ): Promise<LinkVerification> {
-    const isIntegrityVerified = await this.verifyIntegrity(challenge, integrityData);
-    if (!isIntegrityVerified) {
-      throw new BadRequestException('App integrity verification failed.');
-    }
-
-    const id = await this.authService.getUserIdByEmail(email);
-    if (!id) {
-      throw new NotFoundException(`Email ${email} not found in the player directory.`);
-    }
-
-    const verification = await this.verificationService.upsert(userId, id, true, walletAddress);
-
-    // Pull the wallet's primary device-held identity ed25519 public
-    // key out of the supplied manifest before publishing the DID
-    // document — that's the key we'll surface as `#keys-2`. The
-    // algorand wallet address is correlation metadata only and stays
-    // in `alsoKnownAs`; it is no longer used as a verification method.
-    const identityPublicKey = this.extractIdentityPublicKey(deviceManifest);
-
-    // Republish the DID document so the linked wallet shows up under
-    // `alsoKnownAs` and `#keys-2` reflects the device-held identity.
-    // Failures propagate so callers see link/DID drift immediately
-    // instead of silently.
-    await this.republishDidWithLink(id, identityPublicKey);
-
-    // Best-effort: seed the wallet's did:key device manifest if the
-    // wallet supplied one. The manifest is keyed against the
-    // authenticated `userId` (Better Auth), not the vault player id —
-    // it represents the device, not the on-chain identity.
-    if (deviceManifest) {
-      await this.seedDeviceManifest(userId, deviceManifest);
-    }
-
-    return verification;
-  }
-
-  /**
-   * Generates a unique challenge for app integrity verification.
-   * @returns A random challenge string.
-   */
-  async generateChallenge(): Promise<string> {
-    const challenge = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-    return challenge;
-  }
-
-  /**
-   * Verifies the app integrity using tokens from Expo AppIntegrity.
-   * Currently implements a placeholder for Google Play Integrity and Apple App Attest.
-   * @param challenge The challenge that was issued.
-   * @param integrityData The data containing integrity tokens.
-   * @returns True if verification passes.
-   */
-  async verifyIntegrity(
-    challenge: string,
-    integrityData: {
-      integrityToken?: string;
-      attestationObject?: string;
-      keyId?: string;
-    },
-  ): Promise<boolean> {
-    const { integrityToken, attestationObject, keyId } = integrityData;
-    this.logger.debug(`Verifying integrity with challenge: ${challenge}`);
-
-    if (integrityToken) {
-      this.logger.log('Verifying Google Play Integrity token...');
-      // TODO: Implement actual verification with Google Play Integrity API
-      // For now, we accept all tokens in this placeholder
-      return true;
-    }
-
-    if (attestationObject && keyId) {
-      this.logger.log('Verifying Apple App Attest attestation...');
-      // TODO: Implement actual verification with Apple App Attest service
-      // For now, we accept all attestations in this placeholder
-      return true;
-    }
-
-    this.logger.warn('No app integrity data provided');
-    return false;
-  }
-
-  /**
-   * Creates or updates a mapping between an authentication user and a vault player.
-   * @param userId The ID of the authenticated user.
-   * @param id The ID of the player in the vault.
-   * @returns The updated or newly created LinkVerification.
-   */
-  async associateAccount(userId: string, id: string): Promise<LinkVerification> {
-    return this.verificationService.upsert(userId, id, true);
-  }
-
-  /**
-   * Attempts to automatically associate an authenticated user with a vault player
-   * based on their email address.
-   * @param userId The ID of the authenticated user.
-   * @param email The user's email address.
-   * @returns The LinkVerification if association was successful, null otherwise.
-   */
-  async autoAssociate(userId: string, email: string): Promise<LinkVerification | null> {
-    const id = await this.authService.getUserIdByEmail(email);
-    if (!id) return null;
-
-    const player = await this.getVaultPlayer(id);
-    if (!player) return null;
-
-    this.logger.log(`Auto-associating user ${userId} (${email}) with vault player ${id}`);
-    return this.associateAccount(userId, id);
-  }
-
-  /**
-   * Retrieves the mapping for a specific authenticated user.
-   * @param userId The ID of the authenticated user.
-   * @returns The LinkVerification if found, null otherwise.
-   */
-  async getLinkVerification(userId: string): Promise<LinkVerification | null> {
-    return this.verificationService.findByUserId(userId);
-  }
-
-  /**
-   * Retrieves all link verifications.
-   * @returns A list of all LinkVerifications.
-   */
-  async findAll(): Promise<LinkVerification[]> {
-    return this.verificationService.findAll();
-  }
-
-  async findOne(id: string): Promise<LinkVerification> {
-    return this.verificationService.findOne(id);
-  }
-
-  async create(data: Partial<LinkVerification>): Promise<LinkVerification> {
-    return this.verificationService.create(data);
-  }
-
-  async update(id: string, data: Partial<LinkVerification>): Promise<LinkVerification> {
-    return this.verificationService.update(id, data);
-  }
-
-  async remove(id: string): Promise<void> {
-    return this.verificationService.remove(id);
-  }
-
-  /**
-   * Retrieves all link verifications for a specific vault player.
-   * Verifies that the provided vault token has access to the player.
-   * @param id The ID of the player in the vault.
-   * @param vaultToken The vault token for verification.
-   * @returns A list of LinkVerifications.
-   */
-  async getVerifications(id: string, vaultToken: string): Promise<LinkVerification[]> {
-    await this.verifyVaultAccess(id, vaultToken);
-    return this.verificationService.findByPlayerId(id);
-  }
-
-  /**
-   * Verifies that a vault token has access to a specific player.
-   * @param id The ID of the player.
-   * @param vaultToken The vault token.
-   * @throws BadRequestException if access is denied.
-   */
-  private async verifyVaultAccess(id: string, vaultToken: string): Promise<void> {
-    try {
-      const transitPath = this.configService.get<string>('VAULT_TRANSIT_USERS_PATH');
-      await this.vaultService.getKey(id, transitPath, vaultToken);
-    } catch (error) {
-      this.logger.error(`Unauthorized access attempt for player ${id}`, error.stack);
-      throw new BadRequestException('Invalid vault token or unauthorized access to player.');
-    }
-  }
-
-  /**
-   * Fetches player information from the vault.
-   * @param id The ID of the player in the vault.
-   * @returns The player information or null if not found or on error.
-   */
-  async getVaultPlayer(id: string) {
-    try {
-      const roleId = this.configService.get<string>('VAULT_ROLE_ID');
-      const secretId = this.configService.get<string>('VAULT_SECRET_ID');
-      const token = await this.vaultService.getTokenWithRole(roleId, secretId);
-
-      const players = await this.vaultService.getKeys(token);
-      return players.find((p) => p.user_id === id) || null;
-    } catch (error) {
-      this.logger.error(`Failed to fetch vault player ${id}`, error.stack);
-      return null;
-    }
-  }
+function spkiFromEd25519(rawPublicKey: Uint8Array): Buffer {
+  const spki = Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(rawPublicKey)]);
+  createPublicKey({ key: spki, format: 'der', type: 'spki' });
+  return spki;
 }

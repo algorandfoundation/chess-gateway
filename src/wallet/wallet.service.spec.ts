@@ -3,7 +3,7 @@ import { VaultService } from '../vault/vault.service';
 import { WalletService } from './wallet.service';
 import { ChainService } from '../chain/chain.service';
 import { DidService } from '../did/did.service';
-import { VerificationService } from '../link/verification/verification.service';
+import { Oid4vcAgentProvider } from '../oid4vc/agent/oid4vc-agent.provider';
 import { CreateAssetDto } from './create-asset.dto';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
@@ -23,7 +23,7 @@ describe('WalletService', () => {
   let chainServiceMock: jest.Mocked<ChainService>;
   let configServiceMock: jest.Mocked<ConfigService>;
   let didServiceMock: jest.Mocked<DidService>;
-  let verificationServiceMock: jest.Mocked<VerificationService>;
+  let oid4vcAgentProviderMock: jest.Mocked<Oid4vcAgentProvider>;
 
   let chainService: ChainService;
   let httpService: HttpService;
@@ -36,21 +36,22 @@ describe('WalletService', () => {
     // Default DID-publish stub: a successful publication so userCreate() tests
     // observe the new `did` field but legacy expectations (which omitted it)
     // can opt out by deleting it from the result before assertion.
-    didServiceMock.publishUserDid.mockResolvedValue({
+    didServiceMock.publishControlledDid.mockResolvedValue({
       did: 'did:algo:test:app:1:00',
-      status: 'published',
-      document: {},
+      document: {} as never,
       txIds: [],
     });
-    didServiceMock.buildUserDidInfo.mockResolvedValue(null);
-    verificationServiceMock = createMockInstance(VerificationService);
-    verificationServiceMock.findByPlayerId.mockResolvedValue([]);
+    // `deriveDid` is now a pure helper on `DidService` (no chain I/O); the
+    // mock returns a deterministic value so the `getKeys` / `getUserInfo`
+    // expectations stay self-contained.
+    didServiceMock.deriveDid.mockReturnValue('did:algo:test:app:1:derived');
+    oid4vcAgentProviderMock = createMockInstance(Oid4vcAgentProvider);
     walletService = new WalletService(
       vaultServiceMock,
       chainServiceMock,
       configServiceMock,
       didServiceMock,
-      verificationServiceMock,
+      oid4vcAgentProviderMock,
     );
 
     httpService = createMockInstance(HttpService);
@@ -82,16 +83,11 @@ describe('WalletService', () => {
 
     const result = await walletService.userCreate(userId, 'vault_token');
 
-    // expect(vaultServiceMock.getUserPublicKey).toHaveBeenCalledWith(userId, 'vault_token');
-    // expect(chainServiceMock.getAccountBalance).toHaveBeenCalledWith(new Address(pubKey).toString());
-    expect(didServiceMock.publishUserDid).toHaveBeenCalledWith(
-      expect.objectContaining({ userId, vaultToken: 'vault_token' }),
-    );
     expect(result).toStrictEqual({
       public_address: new Address(pubKey).toString(),
       user_id: userId,
       algoBalance: '0',
-      did: 'did:algo:test:app:1:00',
+      did: null,
       wallet_address: null,
     });
   });
@@ -115,7 +111,7 @@ describe('WalletService', () => {
       {
         public_address: new Address(pubKey).toString(),
         user_id: userId,
-        did: null,
+        did: 'did:algo:test:app:1:derived',
         wallet_address: null,
       },
     ]);
@@ -138,7 +134,7 @@ describe('WalletService', () => {
       public_address: new Address(pubKey).toString(),
       user_id: '123581253191824129481240513501928401928',
       algoBalance: algoBalanceMock.toString(),
-      did: null,
+      did: 'did:algo:test:app:1:derived',
       wallet_address: null,
     });
   });

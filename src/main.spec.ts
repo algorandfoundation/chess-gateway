@@ -67,6 +67,10 @@ describe('Main bootstrap', () => {
           this.config.bearerAuth = true;
           return this;
         }
+        addApiKey(options: any, name: string) {
+          this.config.apiKey = { options, name };
+          return this;
+        }
         addSecurityRequirements(security: string) {
           this.config.securityRequirements = security;
           return this;

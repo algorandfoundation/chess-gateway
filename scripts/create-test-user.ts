@@ -12,7 +12,7 @@ import axios from 'axios';
  *   3. Sign in to the pawn API (`POST /v1/auth/sign-in/`) to obtain a JWT.
  *   4. Create a new user "jim" (`POST /v1/wallet/user/`), which also triggers
  *      the on-chain DID publication for the user.
- *   5. Read back the cached DID record (`GET /v1/did/users/jim`) and print it.
+ *   5. Read back the cached DID record (`GET /v1/did/identities/jim`) and print it.
  *
  * The script fails (non-zero exit) on any HTTP error or missing DID record so
  * it can be wired into CI / local smoke checks.
@@ -51,16 +51,12 @@ async function apiSignIn(vaultToken: string): Promise<string> {
 
 async function createUser(accessToken: string, userId: string) {
   const url = `${API_BASE_URL}/v1/wallet/user/`;
-  const response = await axios.post(
-    url,
-    { user_id: userId },
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  );
+  const response = await axios.post(url, { user_id: userId }, { headers: { Authorization: `Bearer ${accessToken}` } });
   return response.data;
 }
 
 async function fetchDidRecord(accessToken: string, userId: string) {
-  const url = `${API_BASE_URL}/v1/did/users/${encodeURIComponent(userId)}`;
+  const url = `${API_BASE_URL}/v1/did/identities/${encodeURIComponent(userId)}`;
   const response = await axios.get(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -70,8 +66,7 @@ async function fetchDidRecord(accessToken: string, userId: string) {
 function readManagerCreds(): ApproleCreds {
   if (!fs.existsSync(MANAGER_CREDS_FILE)) {
     throw new Error(
-      `Manager credentials file not found at ${MANAGER_CREDS_FILE}. ` +
-        `Run \`yarn vault:development:init\` first.`,
+      `Manager credentials file not found at ${MANAGER_CREDS_FILE}. ` + `Run \`yarn vault:development:init\` first.`,
     );
   }
   const raw = fs.readFileSync(MANAGER_CREDS_FILE, 'utf-8');
@@ -125,14 +120,10 @@ async function main() {
   console.log(JSON.stringify(userInfo, null, 2));
 
   if (!userInfo?.did?.did) {
-    throw new Error(
-      `Created user response did not include a DID record. Response: ${JSON.stringify(userInfo)}`,
-    );
+    throw new Error(`Created user response did not include a DID record. Response: ${JSON.stringify(userInfo)}`);
   }
   if (userInfo.did.status !== 'published') {
-    throw new Error(
-      `User created but DID status is "${userInfo.did.status}" (error: ${userInfo.did.error ?? 'n/a'})`,
-    );
+    throw new Error(`User created but DID status is "${userInfo.did.status}" (error: ${userInfo.did.error ?? 'n/a'})`);
   }
 
   let didRecord: any;

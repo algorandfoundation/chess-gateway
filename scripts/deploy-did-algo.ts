@@ -1,7 +1,9 @@
 /**
  * Deploys a fresh `DIDAlgoStorage` smart contract using the manager
- * key held in Vault as the creator/signer, and prints the resulting
- * application id so it can be copied into `DID_ALGO_APP_ID`.
+ * key held in Vault as the creator/signer, and persists the resulting
+ * application id into Vault KV at
+ * `secret/intermezzo/manager/app-id` so the running service picks it
+ * up on next boot.
  *
  * Usage:
  *   npx ts-node scripts/deploy-did-algo.ts
@@ -30,8 +32,13 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import axios from 'axios';
 import { buildVaultTransactionSigner } from '../src/did/vault-signer';
-import { buildAlgorandClient, prefundAccountIfLocalNet } from '../libs/algorand';
-import { updateEnvFile } from '../libs/env';
+import {
+  APP_ACCOUNT_BASE_MBR_MICROALGOS,
+  buildAlgorandClient,
+  prefundAccountIfLocalNet,
+  topUpFromSender,
+} from '../libs/algorand';
+import { MANAGER_APP_ID_KV_PATH } from '../src/did/did.service';
 
 async function login(vault: VaultService): Promise<string> {
   const roleId = process.env.VAULT_ROLE_ID;
@@ -87,13 +94,14 @@ async function main(): Promise<void> {
   console.log(`App ID:    ${appClient.appId}`);
   console.log(`App addr:  ${appClient.appAddress}`);
 
-  // Fund the contract address
-  await prefundAccountIfLocalNet(algorand, appClient.appAddress, 1000);
+  // Fund the contract account from the manager with just its base
+  // MBR (0.1 ALGO). Per-box MBR is paid inline as part of each
+  // `upload` group, so no extra slack is needed here.
+  await topUpFromSender(algorand, managerAddress, appClient.appAddress, APP_ACCOUNT_BASE_MBR_MICROALGOS);
 
+  await vault.kvWrite(MANAGER_APP_ID_KV_PATH, { appId: appClient.appId.toString() }, vaultToken);
   console.log('');
-  console.log('Set this in your .env:');
-  console.log(`DID_ALGO_APP_ID=${appClient.appId}`);
-  updateEnvFile('DID_ALGO_APP_ID', appClient.appId.toString());
+  console.log(`Persisted appId=${appClient.appId} to Vault KV at ${MANAGER_APP_ID_KV_PATH}`);
 }
 
 main().catch((err) => {

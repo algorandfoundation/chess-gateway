@@ -170,6 +170,19 @@ export interface BuildDocumentParams {
    * can verify any backend-served manifest against the on-chain hash.
    */
   manifestAnchor?: ManifestAnchor;
+  /**
+   * Explicit owner / controller DID for this document. When provided
+   * the verification methods are declared as controlled by this DID
+   * (typically a `did:key` held by an end user), instead of by the
+   * `did:algo` itself. The owner DID is also surfaced in
+   * `alsoKnownAs` so resolvers can follow the ownership relation
+   * without parsing the verification method graph.
+   *
+   * Used by the "uncontrolled" `did:algo` flow where the manager
+   * pays for the on-chain box write but the cryptographic key
+   * material lives exclusively in the holder's wallet.
+   */
+  controllerDid?: string | null;
 }
 
 /**
@@ -185,8 +198,10 @@ export function buildDidDocument({
   identityPublicKey,
   promotedKeys,
   manifestAnchor,
+  controllerDid,
 }: BuildDocumentParams): DidDocument {
   const keyId = `${did}#keys-1`;
+  const vmController = controllerDid && controllerDid.length > 0 ? controllerDid : did;
   const doc: DidDocument = {
     '@context': ['https://www.w3.org/ns/did/v1', 'https://w3id.org/security/suites/ed25519-2020/v1'],
     id: did,
@@ -194,13 +209,20 @@ export function buildDidDocument({
       {
         id: keyId,
         type: 'Ed25519VerificationKey2020',
-        controller: did,
+        controller: vmController,
         publicKeyMultibase: encodePublicKeyMultibase(publicKey),
       },
     ],
     authentication: [keyId],
     assertionMethod: [keyId],
   };
+  if (controllerDid && controllerDid.length > 0) {
+    // Surface the owner DID via `alsoKnownAs` so resolvers can follow
+    // the ownership relation without inspecting the verification
+    // method graph. This is the canonical link from an "uncontrolled"
+    // `did:algo` back to the holder's `did:key`.
+    doc.alsoKnownAs = [...(doc.alsoKnownAs ?? []), controllerDid];
+  }
   if (identityPublicKey && identityPublicKey.length > 0) {
     // The wallet's primary device-held identity key (the `did:key`
     // primary VM from the device manifest). This is the key the wallet
@@ -223,7 +245,7 @@ export function buildDidDocument({
     // sign OID4VCI proofs with the payment key). The CAIP-style URI
     // lets resolvers tie the DID to the user's on-chain wallet without
     // implying the payment key is usable for DID-Auth or assertions.
-    doc.alsoKnownAs = [`algorand:${linkedWalletAddress}`];
+    doc.alsoKnownAs = [...(doc.alsoKnownAs ?? []), `algorand:${linkedWalletAddress}`];
   }
   if (promotedKeys && promotedKeys.length > 0) {
     // De-duplicate by fragment so a wallet that re-pushes the same key
